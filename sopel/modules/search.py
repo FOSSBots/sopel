@@ -162,7 +162,6 @@ def search(bot, trigger):
     bot.say(result)
 
 
-
 @plugin.command('suggest')
 @plugin.example('.suggest wikip', 'wikipedia', online=True, vcr=True)
 @plugin.example('.suggest', '.suggest what?')
