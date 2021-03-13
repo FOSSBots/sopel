@@ -25,12 +25,6 @@ jobs:
       python: 3.9
 git:
   submodules: false
-branches:
-  only:
-    - master
-    - /^\d+\.\d+\.x$/  # allows building maintenance branches
-    - /^v?\d+\.\d+(\.\d+)?(-\S*)?$/  # allows building version tags
-    - /^travis-.+$/  # allows branch names intended to test Travis changes/problems
 cache:
   directories:
     - $HOME/.cache/pip
