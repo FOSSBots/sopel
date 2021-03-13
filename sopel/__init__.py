@@ -10,13 +10,14 @@
 #
 # Licensed under the Eiffel Forum License 2.
 
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 from collections import namedtuple
 import locale
-import pkg_resources
 import re
 import sys
+
+import pkg_resources
 
 __all__ = [
     'bot',
@@ -26,7 +27,8 @@ __all__ = [
     'irc',
     'loader',
     'logger',
-    'module',
+    'module',  # deprecated in 7.1, removed in 9.0
+    'plugin',
     'tools',
     'trigger',
     'version_info',
@@ -45,7 +47,7 @@ __version__ = pkg_resources.get_distribution('sopel').version
 
 
 def _version_info(version=__version__):
-    regex = re.compile(r'(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?.*')
+    regex = re.compile(r'(\d+)\.(\d+)\.(\d+)(?:[\-\.]?(a|b|rc)(\d+))?.*')
     version_groups = regex.match(version).groups()
     major, minor, micro = (int(piece) for piece in version_groups[0:3])
     level = version_groups[3]

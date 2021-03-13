@@ -37,7 +37,8 @@ Sopel requires ``backports.ssl_match_hostname`` to be installed. Use
 ``yum install python-backports.ssl_match_hostname`` to install it, or download
 and install it manually `from PyPI <https://pypi.org/project/backports.ssl_match_hostname>`_.
 
-Note: Python 2.x is near end of life. Sopel will drop support in version 8.0.
+Important: Sopel 8.0 will drop support for many old Python versions,
+including Python 2.7!
 
 In the source directory (whether cloned or from the tarball) run ``pip install
 -e .``. You can then run ``sopel`` to configure and start the bot.
@@ -82,15 +83,13 @@ Questions?
 
 Join us in `#sopel <irc://irc.freenode.net/#sopel>`_ on Freenode.
 
-Financial support
------------------
+Donations
+---------
 
 We're thrilled that you want to support the project!
 
-We have applied for access to organization-level sponsorship from GitHub. In
-the interim, if you wish to contribute sooner, you are welcome to do so
-through `Open Collective <https://opencollective.com/sopel>`_ or sponsor
-Sopel's maintainer, `dgw <https://github.com/sponsors/dgw>`_, individually.
+You can `sponsor Sopel <https://github.com/sponsors/sopel-irc>`_ here on
+GitHub or donate through `Open Collective <https://opencollective.com/sopel>`_.
 
 Any donations received will be used to cover infrastructure costs, such as our
 domain name and hosting services. Our main project site is easily hosted by

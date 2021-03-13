@@ -1,11 +1,18 @@
 # coding=utf-8
-"""Tests for message formatting"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+"""Tests for sopel.module decorators
+
+.. important::
+
+    These tests are kept here as a proof that ``sopel.module`` is backward
+    compatible up to Sopel 9, when it will be removed.
+
+"""
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import pytest
 
-from sopel.trigger import PreTrigger, Trigger
 from sopel import module, tools
+from sopel.trigger import PreTrigger, Trigger
 
 
 TMP_CONFIG = """
@@ -190,6 +197,7 @@ def test_commands():
     def mock(bot, trigger, match):
         return True
     assert mock.commands == ['sopel']
+    assert not hasattr(mock, 'rule')
 
 
 def test_commands_args():
@@ -197,6 +205,7 @@ def test_commands_args():
     def mock(bot, trigger, match):
         return True
     assert mock.commands == ['sopel', 'bot']
+    assert not hasattr(mock, 'rule')
 
 
 def test_commands_multiple():
@@ -206,6 +215,7 @@ def test_commands_multiple():
     def mock(bot, trigger, match):
         return True
     assert mock.commands == ['robot', 'bot', 'sopel']
+    assert not hasattr(mock, 'rule')
 
 
 def test_nickname_commands():
@@ -213,6 +223,7 @@ def test_nickname_commands():
     def mock(bot, trigger, match):
         return True
     assert mock.nickname_commands == ['sopel']
+    assert not hasattr(mock, 'rule')
 
 
 def test_nickname_commands_args():
@@ -220,6 +231,7 @@ def test_nickname_commands_args():
     def mock(bot, trigger, match):
         return True
     assert mock.nickname_commands == ['sopel', 'bot']
+    assert not hasattr(mock, 'rule')
 
 
 def test_nickname_commands_multiple():
@@ -229,6 +241,7 @@ def test_nickname_commands_multiple():
     def mock(bot, trigger, match):
         return True
     assert mock.nickname_commands == ['robot', 'bot', 'sopel']
+    assert not hasattr(mock, 'rule')
 
 
 def test_action_commands():
@@ -236,7 +249,8 @@ def test_action_commands():
     def mock(bot, trigger, match):
         return True
     assert mock.action_commands == ['sopel']
-    assert mock.intents == ['ACTION']
+    assert not hasattr(mock, 'intents')
+    assert not hasattr(mock, 'rule')
 
 
 def test_action_commands_args():
@@ -244,7 +258,8 @@ def test_action_commands_args():
     def mock(bot, trigger, match):
         return True
     assert mock.action_commands == ['sopel', 'bot']
-    assert mock.intents == ['ACTION']
+    assert not hasattr(mock, 'intents')
+    assert not hasattr(mock, 'rule')
 
 
 def test_action_commands_multiple():
@@ -254,7 +269,22 @@ def test_action_commands_multiple():
     def mock(bot, trigger, match):
         return True
     assert mock.action_commands == ['robot', 'bot', 'sopel']
-    assert mock.intents == ['ACTION']
+    assert not hasattr(mock, 'intents')
+    assert not hasattr(mock, 'rule')
+
+
+def test_all_commands():
+    @module.commands('sopel')
+    @module.action_commands('me_sopel')
+    @module.nickname_commands('name_sopel')
+    def mock(bot, trigger, match):
+        return True
+
+    assert mock.commands == ['sopel']
+    assert mock.action_commands == ['me_sopel']
+    assert mock.nickname_commands == ['name_sopel']
+    assert not hasattr(mock, 'intents')
+    assert not hasattr(mock, 'rule')
 
 
 def test_priority():

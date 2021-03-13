@@ -1,6 +1,6 @@
 # coding=utf-8
 """Tests for core ``sopel.irc.isupport``"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import pytest
 
@@ -162,10 +162,8 @@ def test_isupport_chanmodes():
 def test_isupport_chanmodes_undefined():
     instance = isupport.ISupport()
 
-    assert not hasattr(instance, 'CHANMODES')
-
-    with pytest.raises(AttributeError):
-        instance.CHANMODES
+    assert set(instance.CHANMODES.keys()) == set("ABCD")
+    assert set(instance.CHANMODES.values()) == {""}
 
 
 def test_isupport_maxlist():

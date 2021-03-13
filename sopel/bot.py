@@ -6,30 +6,43 @@
 #
 # Licensed under the Eiffel Forum License 2.
 
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 from ast import literal_eval
-import collections
 from datetime import datetime
 import itertools
 import logging
 import re
+import signal
 import sys
 import threading
 import time
 
 from sopel import irc, logger, plugins, tools
 from sopel.db import SopelDB
-from sopel.tools import Identifier, deprecated
+import sopel.loader
+from sopel.module import NOLIMIT
+from sopel.plugins import jobs as plugin_jobs, rules as plugin_rules
+from sopel.tools import deprecated, Identifier
 import sopel.tools.jobs
 from sopel.trigger import Trigger
-from sopel.module import NOLIMIT
-import sopel.loader
 
 
 __all__ = ['Sopel', 'SopelWrapper']
 
 LOGGER = logging.getLogger(__name__)
+QUIT_SIGNALS = [
+    getattr(signal, name)
+    for name in ['SIGUSR1', 'SIGTERM', 'SIGINT']
+    if hasattr(signal, name)
+]
+RESTART_SIGNALS = [
+    getattr(signal, name)
+    for name in ['SIGUSR2', 'SIGILL']
+    if hasattr(signal, name)
+]
+SIGNALS = QUIT_SIGNALS + RESTART_SIGNALS
+
 
 if sys.version_info.major >= 3:
     unicode = str
@@ -46,30 +59,9 @@ class Sopel(irc.AbstractBot):
         self.wantsrestart = False
         self._running_triggers = []
         self._running_triggers_lock = threading.Lock()
-
-        # `re.compile('.*') is re.compile('.*')` because of caching, so we need
-        # to associate a list with each regex, since they are unexpectedly
-        # indistinct.
-        self._callables = {
-            'high': collections.defaultdict(list),
-            'medium': collections.defaultdict(list),
-            'low': collections.defaultdict(list)
-        }
         self._plugins = {}
-
-        self.doc = {}
-        """A dictionary of command names to their documentation.
-
-        Each command is mapped to its docstring and any available examples, if
-        declared in the plugin's code.
-
-        .. versionchanged:: 3.2
-            Use the first item in each callable's commands list as the key,
-            instead of the function name as declared in the source code.
-        """
-
-        self._command_groups = collections.defaultdict(list)
-        """A mapping of plugin names to lists of their commands."""
+        self._rules_manager = plugin_rules.Manager()
+        self._scheduler = plugin_jobs.Scheduler(self)
 
         self._times = {}
         """
@@ -93,13 +85,13 @@ class Sopel(irc.AbstractBot):
         The value associated with each channel is a dictionary of
         :class:`sopel.tools.Identifier`\\s to a bitwise integer value,
         determined by combining the appropriate constants from
-        :mod:`sopel.module`.
+        :mod:`sopel.plugin`.
 
         .. deprecated:: 6.2.0
             Use :attr:`channels` instead. Will be removed in Sopel 8.
         """
 
-        self.channels = tools.SopelMemory()  # name to chan obj
+        self.channels = tools.SopelIdentifierMemory()
         """A map of the channels that Sopel is in.
 
         The keys are :class:`sopel.tools.Identifier`\\s of the channel names,
@@ -107,7 +99,7 @@ class Sopel(irc.AbstractBot):
         the users in the channel and their permissions.
         """
 
-        self.users = tools.SopelMemory()  # name to user obj
+        self.users = tools.SopelIdentifierMemory()
         """A map of the users that Sopel is aware of.
 
         The keys are :class:`sopel.tools.Identifier`\\s of the nicknames, and
@@ -127,14 +119,72 @@ class Sopel(irc.AbstractBot):
         self.shutdown_methods = []
         """List of methods to call on shutdown."""
 
-        self.scheduler = sopel.tools.jobs.JobScheduler(self)
-        """Job Scheduler. See :func:`sopel.module.interval`."""
+    @property
+    def rules(self):
+        """Rules manager."""
+        return self._rules_manager
+
+    @property
+    def scheduler(self):
+        """Job Scheduler. See :func:`sopel.plugin.interval`."""
+        return self._scheduler
 
     @property
     def command_groups(self):
-        """A mapping of plugin names to lists of their commands."""
+        """A mapping of plugin names to lists of their commands.
+
+        .. versionchanged:: 7.1
+            This attribute is now generated on the fly from the registered list
+            of commands and nickname commands.
+        """
         # This was supposed to be deprecated, but the built-in help plugin needs it
-        return self._command_groups
+        # TODO: create a new, better, doc interface to remove it
+        plugin_commands = itertools.chain(
+            self._rules_manager.get_all_commands(),
+            self._rules_manager.get_all_nick_commands(),
+        )
+        result = {}
+
+        for plugin, commands in plugin_commands:
+            if plugin not in result:
+                result[plugin] = list(sorted(commands.keys()))
+            else:
+                result[plugin].extend(commands.keys())
+                result[plugin] = list(sorted(result[plugin]))
+
+        return result
+
+    @property
+    def doc(self):
+        """A dictionary of command names to their documentation.
+
+        Each command is mapped to its docstring and any available examples, if
+        declared in the plugin's code.
+
+        .. versionchanged:: 3.2
+            Use the first item in each callable's commands list as the key,
+            instead of the function name as declared in the source code.
+
+        .. versionchanged:: 7.1
+            This attribute is now generated on the fly from the registered list
+            of commands and nickname commands.
+        """
+        # TODO: create a new, better, doc interface to remove it
+        plugin_commands = itertools.chain(
+            self._rules_manager.get_all_commands(),
+            self._rules_manager.get_all_nick_commands(),
+        )
+        commands = (
+            (command, command.get_doc(), command.get_usages())
+            for plugin, commands in plugin_commands
+            for command in commands.values()
+        )
+
+        return dict(
+            (name, (doc.splitlines(), [u['text'] for u in usages]))
+            for command, doc, usages in commands
+            for name in ((command.name,) + command.aliases)
+        )
 
     @property
     def hostmask(self):
@@ -150,6 +200,72 @@ class Sopel(irc.AbstractBot):
 
         return self.users.get(self.nick).hostmask
 
+    def has_channel_privilege(self, channel, privilege):
+        """Tell if the bot has a ``privilege`` level or above in a ``channel``.
+
+        :param str channel: a channel the bot is in
+        :param int privilege: privilege level to check
+        :raise ValueError: when the channel is unknown
+
+        This method checks the bot's privilege level in a channel, i.e. if it
+        has this level or higher privileges::
+
+            >>> bot.channels['#chan'].privileges[bot.nick] = plugin.OP
+            >>> bot.has_channel_privilege('#chan', plugin.VOICE)
+            True
+
+        The ``channel`` argument can be either a :class:`str` or a
+        :class:`sopel.tools.Identifier`, as long as Sopel joined said channel.
+        If the channel is unknown, a :exc:`ValueError` will be raised.
+        """
+        if channel not in self.channels:
+            raise ValueError('Unknown channel %s' % channel)
+
+        return self.channels[channel].has_privilege(self.nick, privilege)
+
+    # signal handlers
+
+    def set_signal_handlers(self):
+        """Set signal handlers for the bot.
+
+        Before running the bot, this method can be called from the main thread
+        to setup signals. If the bot is connected, upon receiving a signal it
+        will send a ``QUIT`` message. Otherwise, it raises a
+        :exc:`KeyboardInterrupt` error.
+
+        .. note::
+
+            Per the Python documentation of :func:`signal.signal`:
+
+                When threads are enabled, this function can only be called from
+                the main thread; attempting to call it from other threads will
+                cause a :exc:`ValueError` exception to be raised.
+
+        """
+        for obj in SIGNALS:
+            signal.signal(obj, self._signal_handler)
+
+    def _signal_handler(self, sig, frame):
+        if sig in QUIT_SIGNALS:
+            if self.backend.is_connected():
+                LOGGER.warning('Got quit signal, sending QUIT to server.')
+                self.quit('Closing')
+            else:
+                self.hasquit = True  # mark the bot as "want to quit"
+                LOGGER.warning('Got quit signal.')
+                raise KeyboardInterrupt
+        elif sig in RESTART_SIGNALS:
+            if self.backend.is_connected():
+                LOGGER.warning('Got restart signal, sending QUIT to server.')
+                self.restart('Restarting')
+            else:
+                LOGGER.warning('Got restart signal.')
+                self.wantsrestart = True  # mark the bot as "want to restart"
+                self.hasquit = True  # mark the bot as "want to quit"
+                raise KeyboardInterrupt
+
+    # setup
+
     def setup(self):
         """Set up Sopel bot before it can run.
 
@@ -161,7 +277,7 @@ class Sopel(irc.AbstractBot):
         """
         self.setup_logging()
         self.setup_plugins()
-        self.scheduler.start()
+        self.post_setup()
 
     def setup_logging(self):
         """Set up logging based on config options."""
@@ -207,6 +323,10 @@ class Sopel(irc.AbstractBot):
             except Exception as e:
                 load_error = load_error + 1
                 LOGGER.exception('Error loading %s: %s', name, e)
+            except SystemExit:
+                load_error = load_error + 1
+                LOGGER.exception(
+                    'Error loading %s (plugin tried to exit)', name)
             else:
                 try:
                     if plugin.has_setup():
@@ -228,6 +348,34 @@ class Sopel(irc.AbstractBot):
                 load_disabled)
         else:
             LOGGER.warning("Warning: Couldn't load any plugins")
+
+    # post setup
+
+    def post_setup(self):
+        """Perform post-setup actions.
+
+        This method handles everything that should happen after all the plugins
+        are loaded, and before the bot can connect to the IRC server.
+
+        At the moment, this method checks for undefined configuration options,
+        and starts the job scheduler.
+
+        .. versionadded:: 7.1
+        """
+        settings = self.settings
+        for section_name, section in settings.get_defined_sections():
+            for option_name in settings.parser.options(section_name):
+                if not hasattr(section, option_name):
+                    LOGGER.warning(
+                        'Config option `%s.%s` is not defined by its section '
+                        'and may not be recognized by Sopel.',
+                        section_name,
+                        option_name,
+                    )
+
+        self._scheduler.start()
+
+    # plugins management
 
     def reload_plugin(self, name):
         """Reload a plugin.
@@ -297,7 +445,10 @@ class Sopel(irc.AbstractBot):
         :type urls: :term:`iterable`
         """
         self._plugins[plugin.name] = plugin
-        self.register(callables, jobs, shutdowns, urls)
+        self.register_callables(callables)
+        self.register_jobs(jobs)
+        self.register_shutdowns(shutdowns)
+        self.register_urls(urls)
 
     def remove_plugin(self, plugin, callables, jobs, shutdowns, urls):
         """Remove a loaded plugin from the bot's registry.
@@ -320,18 +471,10 @@ class Sopel(irc.AbstractBot):
         if not self.has_plugin(name):
             raise plugins.exceptions.PluginNotRegistered(name)
 
-        # remove commands, jobs, and shutdown functions
-        for func in itertools.chain(callables, jobs, shutdowns):
-            self.unregister(func)
-
-        # remove URL callback handlers
-        if "url_callbacks" in self.memory:
-            for func in urls:
-                regexes = func.url_regex
-                for regex in regexes:
-                    if func == self.memory['url_callbacks'].get(regex):
-                        self.unregister_url_callback(regex, func)
-                        LOGGER.debug('URL Callback unregistered: %r', regex)
+        # remove plugin rules, jobs, shutdown functions, and url callbacks
+        self._rules_manager.unregister_plugin(name)
+        self._scheduler.unregister_plugin(name)
+        self.unregister_shutdowns(shutdowns)
 
         # remove plugin from registry
         del self._plugins[name]
@@ -360,34 +503,34 @@ class Sopel(irc.AbstractBot):
 
         return self._plugins[name].get_meta_description()
 
-    def unregister(self, obj):
-        """Unregister a callable.
+    # callable management
 
-        :param obj: the callable to unregister
+    @deprecated(
+        reason="Replaced by specific `unregister_*` methods.",
+        version='7.1',
+        removed_in='8.0')
+    def unregister(self, obj):
+        """Unregister a shutdown method.
+
+        :param obj: the shutdown method to unregister
         :type obj: :term:`object`
+
+        This method was used to unregister anything (rules, commands, urls,
+        jobs, and shutdown methods), but since everything can be done by other
+        means, there is no use for it anymore.
         """
-        if not callable(obj):
-            LOGGER.warning('Cannot unregister obj %r: not a callable', obj)
-            return
         callable_name = getattr(obj, "__name__", 'UNKNOWN')
 
-        if hasattr(obj, 'rule'):  # commands and intents have it added
-            for rule in obj.rule:
-                callb_list = self._callables[obj.priority][rule]
-                if obj in callb_list:
-                    callb_list.remove(obj)
-            LOGGER.debug(
-                'Rule callable "%s" unregistered for "%s"',
-                callable_name,
-                rule.pattern)
-
         if hasattr(obj, 'interval'):
-            self.scheduler.remove_callable_job(obj)
-            LOGGER.debug('Job callable removed: %s', callable_name)
+            self.unregister_jobs([obj])
 
         if callable_name == "shutdown" and obj in self.shutdown_methods:
-            self.shutdown_methods.remove(obj)
+            self.unregister_shutdowns([obj])
 
+    @deprecated(
+        reason="Replaced by specific `register_*` methods.",
+        version='7.1',
+        removed_in='8.0')
     def register(self, callables, jobs, shutdowns, urls):
         """Register rules, jobs, shutdown methods, and URL callbacks.
 
@@ -413,90 +556,94 @@ class Sopel(irc.AbstractBot):
         commands configured. It should not be possible to have a callable with
         commands or nick commands but without rules.
         """
-        # Append plugin's shutdown function to the bot's list of functions to
-        # call on shutdown
-        self.shutdown_methods += shutdowns
-        match_any = re.compile('.*')
+        self.register_callables(callables)
+        self.register_jobs(jobs)
+        self.register_shutdowns(shutdowns)
+        self.register_urls(urls)
+
+    def register_callables(self, callables):
+        match_any = re.compile(r'.*')
+        settings = self.settings
+
         for callbl in callables:
-            callable_name = getattr(callbl, "__name__", 'UNKNOWN')
             rules = getattr(callbl, 'rule', [])
+            find_rules = getattr(callbl, 'find_rules', [])
+            search_rules = getattr(callbl, 'search_rules', [])
             commands = getattr(callbl, 'commands', [])
             nick_commands = getattr(callbl, 'nickname_commands', [])
             action_commands = getattr(callbl, 'action_commands', [])
-            events = getattr(callbl, 'event', [])
-            is_rule_only = rules and not commands and not nick_commands
+            is_rule = any([rules, find_rules, search_rules])
+            is_command = any([commands, nick_commands, action_commands])
 
             if rules:
-                for rule in rules:
-                    self._callables[callbl.priority][rule].append(callbl)
-                    if is_rule_only:
-                        # Command & Nick Command are logged later:
-                        # here we log rule only callable
-                        LOGGER.debug(
-                            'Rule callable "%s" registered for "%s"',
-                            callable_name,
-                            rule.pattern)
-                if commands:
-                    LOGGER.debug(
-                        'Command callable "%s" registered for "%s"',
-                        callable_name,
-                        '|'.join(commands))
-                if nick_commands:
-                    LOGGER.debug(
-                        'Nick command callable "%s" registered for "%s"',
-                        callable_name,
-                        '|'.join(nick_commands))
-                if action_commands:
-                    LOGGER.debug(
-                        'Action command callable "%s" registered for "%s"',
-                        callable_name,
-                        '|'.join(action_commands))
-                if events:
-                    LOGGER.debug(
-                        'Event callable "%s" registered for "%s"',
-                        callable_name,
-                        '|'.join(events))
-            else:
-                self._callables[callbl.priority][match_any].append(callbl)
-                if events:
-                    LOGGER.debug(
-                        'Event callable "%s" registered '
-                        'with "match any" rule for "%s"',
-                        callable_name,
-                        '|'.join(events))
-                else:
-                    LOGGER.debug(
-                        'Rule callable "%s" registered with "match any" rule',
-                        callable_name)
+                rule = plugin_rules.Rule.from_callable(settings, callbl)
+                self._rules_manager.register(rule)
+
+            if find_rules:
+                rule = plugin_rules.FindRule.from_callable(settings, callbl)
+                self._rules_manager.register(rule)
+
+            if search_rules:
+                rule = plugin_rules.SearchRule.from_callable(settings, callbl)
+                self._rules_manager.register(rule)
 
             if commands:
-                plugin_name = callbl.plugin_name
-                # TODO doc and make decorator for this. Not sure if this is how
-                # it should work yet, so not making it public for 6.0.
-                category = getattr(callbl, 'category', plugin_name)
-                self._command_groups[category].append(commands[0])
+                rule = plugin_rules.Command.from_callable(settings, callbl)
+                self._rules_manager.register_command(rule)
 
-            for command, docs in callbl._docs.items():
-                self.doc[command] = docs
+            if nick_commands:
+                rule = plugin_rules.NickCommand.from_callable(
+                    settings, callbl)
+                self._rules_manager.register_nick_command(rule)
 
+            if action_commands:
+                rule = plugin_rules.ActionCommand.from_callable(
+                    settings, callbl)
+                self._rules_manager.register_action_command(rule)
+
+            if not is_command and not is_rule:
+                callbl.rule = [match_any]
+                self._rules_manager.register(
+                    plugin_rules.Rule.from_callable(self.settings, callbl))
+
+    def register_jobs(self, jobs):
         for func in jobs:
-            for interval in func.interval:
-                job = sopel.tools.jobs.Job(interval, func)
-                self.scheduler.add_job(job)
-                callable_name = getattr(func, "__name__", 'UNKNOWN')
-                LOGGER.debug(
-                    'Job added "%s", will run every %d seconds',
-                    callable_name,
-                    interval)
+            job = sopel.tools.jobs.Job.from_callable(self.settings, func)
+            self._scheduler.register(job)
 
+    def unregister_jobs(self, jobs):
+        for job in jobs:
+            self._scheduler.remove_callable_job(job)
+
+    def register_shutdowns(self, shutdowns):
+        # Append plugin's shutdown function to the bot's list of functions to
+        # call on shutdown
+        self.shutdown_methods = self.shutdown_methods + list(shutdowns)
+
+    def unregister_shutdowns(self, shutdowns):
+        self.shutdown_methods = [
+            shutdown
+            for shutdown in self.shutdown_methods
+            if shutdown not in shutdowns
+        ]
+
+    def register_urls(self, urls):
         for func in urls:
-            for regex in func.url_regex:
-                self.register_url_callback(regex, func)
-                callable_name = getattr(func, "__name__", 'UNKNOWN')
-                LOGGER.debug(
-                    'URL Callback added "%s" for URL pattern "%s"',
-                    callable_name,
-                    regex)
+            url_regex = getattr(func, 'url_regex', [])
+            url_lazy_loaders = getattr(func, 'url_lazy_loaders', None)
+
+            if url_regex:
+                rule = plugin_rules.URLCallback.from_callable(
+                    self.settings, func)
+                self._rules_manager.register_url_callback(rule)
+
+            if url_lazy_loaders:
+                try:
+                    rule = plugin_rules.URLCallback.from_callable_lazy(
+                        self.settings, func)
+                    self._rules_manager.register_url_callback(rule)
+                except plugins.exceptions.PluginError as err:
+                    LOGGER.error('Cannot register URL callback: %s', err)
 
     @deprecated(
         reason="Replaced by `say` method.",
@@ -514,6 +661,45 @@ class Sopel(irc.AbstractBot):
             Use :meth:`say` instead. Will be removed in Sopel 8.
         """
         self.say(text, recipient, max_messages)
+
+    # message dispatch
+
+    def call_rule(self, rule, sopel, trigger):
+        # rate limiting
+        if not trigger.admin and not rule.is_unblockable():
+            if rule.is_rate_limited(trigger.nick):
+                return
+            if not trigger.is_privmsg and rule.is_channel_rate_limited(trigger.sender):
+                return
+            if rule.is_global_rate_limited():
+                return
+
+        # channel config
+        if trigger.sender in self.config:
+            channel_config = self.config[trigger.sender]
+
+            # disable listed plugins completely on provided channel
+            if 'disable_plugins' in channel_config:
+                disabled_plugins = channel_config.disable_plugins.split(',')
+
+                if '*' in disabled_plugins:
+                    return
+                elif rule.get_plugin_name() in disabled_plugins:
+                    return
+
+            # disable chosen methods from plugins
+            if 'disable_commands' in channel_config:
+                disabled_commands = literal_eval(channel_config.disable_commands)
+                disabled_commands = disabled_commands.get(rule.get_plugin_name(), [])
+                if rule.get_rule_label() in disabled_commands:
+                    return
+
+        try:
+            rule.execute(sopel, trigger)
+        except KeyboardInterrupt:
+            raise
+        except Exception as error:
+            self.error(trigger, exception=error)
 
     def call(self, func, sopel, trigger):
         """Call a function, applying any rate limits or other restrictions.
@@ -614,88 +800,6 @@ class Sopel(irc.AbstractBot):
             if not trigger.is_privmsg:
                 self._times[trigger.sender][func] = current_time
 
-    def get_triggered_callables(self, priority, pretrigger, blocked):
-        """Get triggered callables by priority.
-
-        :param str priority: priority to retrieve callables
-        :param pretrigger: Sopel pretrigger object
-        :type pretrigger: :class:`~sopel.trigger.PreTrigger`
-        :param bool blocked: true if nick or channel is blocked from triggering
-                             callables
-        :return: a tuple with the callable, the trigger, and if it's blocked
-        :rtype: :class:`tuple`
-
-        This methods retrieves all triggered callables for this ``priority``
-        level. It yields each function with its :class:`trigger
-        <sopel.trigger.Trigger>` object and a boolean flag to tell if this
-        callable is blocked or not.
-
-        To be triggered, a callable must match the ``pretrigger`` using a regex
-        pattern. Then it must comply with other criteria (if any) such as
-        event, intents, and echo-message filters.
-
-        A triggered callable won't actually be invoked by Sopel if the nickname
-        or hostname is ``blocked``, *unless* the nickname is an admin or
-        the callable is marked as "unblockable".
-
-        .. seealso::
-
-            Sopel invokes triggered callables in its :meth:`~.dispatch` method.
-            The priority of a callable can be set with the
-            :func:`sopel.module.priority` decorator. Other decorators from
-            :mod:`sopel.module` provide additional criteria and conditions.
-        """
-        args = pretrigger.args
-        text = args[-1] if args else ''
-        event = pretrigger.event
-        intent = pretrigger.tags.get('intent')
-        nick = pretrigger.nick
-        is_echo_message = (
-            nick.lower() == self.nick.lower() and
-            event in ["PRIVMSG", "NOTICE"]
-        )
-        user_obj = self.users.get(nick)
-        account = user_obj.account if user_obj else None
-
-        # get a copy of the list of (regex, function) to prevent race-condition
-        # e.g. when a callable wants to remove callable (other or itself)
-        # from the bot, Python won't (and must not) allow to modify a dict
-        # while it iterates over this very same dict.
-        items = list(self._callables[priority].items())
-
-        for regexp, funcs in items:
-            match = regexp.match(text)
-            if not match:
-                continue
-
-            for func in funcs:
-                trigger = Trigger(
-                    self.settings, pretrigger, match, account)
-
-                # check event
-                if event not in func.event:
-                    continue
-
-                # check intents
-                if hasattr(func, 'intents'):
-                    if not intent:
-                        continue
-
-                    match = any(
-                        func_intent.match(intent)
-                        for func_intent in func.intents
-                    )
-                    if not match:
-                        continue
-
-                # check echo-message feature
-                if is_echo_message and not func.echo:
-                    continue
-
-                is_unblockable = func.unblockable or trigger.admin
-                is_blocked = blocked and not is_unblockable
-                yield (func, trigger, is_blocked)
-
     def _is_pretrigger_blocked(self, pretrigger):
         if self.settings.core.nick_blocks or self.settings.core.host_blocks:
             nick_blocked = self._nick_blocked(pretrigger.nick)
@@ -711,54 +815,58 @@ class Sopel(irc.AbstractBot):
         :param pretrigger: a parsed message from the server
         :type pretrigger: :class:`~sopel.trigger.PreTrigger`
 
-        The ``pretrigger`` (a parsed message) is used to find matching callables;
-        it will retrieve them by order of priority, and run them. It runs
-        triggered callables in separate threads, unless they are marked
-        otherwise with the :func:`sopel.module.thread` decorator.
+        The ``pretrigger`` (a parsed message) is used to find matching rules;
+        it will retrieve them by order of priority, and execute them. It runs
+        triggered rules in separate threads, unless they are marked otherwise.
 
-        However, it won't run triggered callables at all when they can't be run
-        for blocked nickname or hostname (unless marked "unblockable" with
-        the :func:`sopel.module.unblockable` decorator).
+        However, it won't run triggered blockable rules at all when they can't
+        be executed for blocked nickname or hostname.
 
         .. seealso::
 
-            To get a list of triggered callables by priority, it uses
-            :meth:`~get_triggered_callables`. This method is also responsible
-            for telling ``dispatch`` if the function is blocked or not.
+            The pattern matching is done by the
+            :class:`Rules Manager<sopel.plugins.rules.Manager>`.
+
         """
         # list of commands running in separate threads for this dispatch
         running_triggers = []
         # nickname/hostname blocking
         nick_blocked, host_blocked = self._is_pretrigger_blocked(pretrigger)
         blocked = bool(nick_blocked or host_blocked)
-        list_of_blocked_functions = []
+        list_of_blocked_rules = set()
+        # account info
+        nick = pretrigger.nick
+        user_obj = self.users.get(nick)
+        account = user_obj.account if user_obj else None
 
-        # trigger by priority
-        for priority in ('high', 'medium', 'low'):
-            items = self.get_triggered_callables(priority, pretrigger, blocked)
-            for func, trigger, is_blocked in items:
-                function_name = "%s.%s" % (func.__module__, func.__name__)
-                # skip running blocked functions, but track them for logging
-                if is_blocked:
-                    list_of_blocked_functions.append(function_name)
-                    continue
+        for rule, match in self._rules_manager.get_triggered_rules(self, pretrigger):
+            trigger = Trigger(self.settings, pretrigger, match, account)
 
-                # call triggered function
-                wrapper = SopelWrapper(
-                    self, trigger, output_prefix=func.output_prefix)
-                if func.thread:
-                    # run in a separate thread
-                    targs = (func, wrapper, trigger)
-                    t = threading.Thread(target=self.call, args=targs)
-                    t.name = '%s-%s' % (t.name, function_name)
-                    t.start()
-                    running_triggers.append(t)
-                else:
-                    # direct call
-                    self.call(func, wrapper, trigger)
+            is_unblockable = trigger.admin or rule.is_unblockable()
+            if blocked and not is_unblockable:
+                list_of_blocked_rules.add(str(rule))
+                continue
 
-        # log blocked functions
-        if list_of_blocked_functions:
+            wrapper = SopelWrapper(
+                self, trigger, output_prefix=rule.get_output_prefix())
+
+            if rule.is_threaded():
+                # run in a separate thread
+                targs = (rule, wrapper, trigger)
+                t = threading.Thread(target=self.call_rule, args=targs)
+                plugin_name = rule.get_plugin_name()
+                rule_label = rule.get_rule_label()
+                t.name = '%s-%s-%s' % (t.name, plugin_name, rule_label)
+                t.start()
+                running_triggers.append(t)
+            else:
+                # direct call
+                self.call_rule(rule, wrapper, trigger)
+
+        # update currently running triggers
+        self._update_running_triggers(running_triggers)
+
+        if list_of_blocked_rules:
             if nick_blocked and host_blocked:
                 block_type = 'both blocklists'
             elif nick_blocked:
@@ -768,12 +876,9 @@ class Sopel(irc.AbstractBot):
             LOGGER.debug(
                 "%s prevented from using %s by %s.",
                 pretrigger.nick,
-                ', '.join(list_of_blocked_functions),
+                ', '.join(list_of_blocked_rules),
                 block_type,
             )
-
-        # update currently running triggers
-        self._update_running_triggers(running_triggers)
 
     @property
     def running_triggers(self):
@@ -806,11 +911,13 @@ class Sopel(irc.AbstractBot):
             self._running_triggers = [
                 t for t in running_triggers if t.is_alive()]
 
+    # event handlers
+
     def on_scheduler_error(self, scheduler, exc):
         """Called when the Job Scheduler fails.
 
-        :param scheduler: the JobScheduler that errored
-        :type scheduler: :class:`sopel.tools.jobs.JobScheduler`
+        :param scheduler: the job scheduler that errored
+        :type scheduler: :class:`sopel.plugins.jobs.Scheduler`
         :param Exception exc: the raised exception
 
         .. seealso::
@@ -822,8 +929,8 @@ class Sopel(irc.AbstractBot):
     def on_job_error(self, scheduler, job, exc):
         """Called when a job from the Job Scheduler fails.
 
-        :param scheduler: the JobScheduler responsible for the errored ``job``
-        :type scheduler: :class:`sopel.tools.jobs.JobScheduler`
+        :param scheduler: the job scheduler responsible for the errored ``job``
+        :type scheduler: :class:`sopel.plugins.jobs.Scheduler`
         :param job: the Job that errored
         :type job: :class:`sopel.tools.jobs.Job`
         :param Exception exc: the raised exception
@@ -848,7 +955,7 @@ class Sopel(irc.AbstractBot):
 
         if trigger:
             message = '{} from {} at {}. Message was: {}'.format(
-                message, trigger.nick, str(datetime.now()), trigger.group(0)
+                message, trigger.nick, str(datetime.utcnow()), trigger.group(0)
             )
 
         LOGGER.exception(message)
@@ -888,18 +995,19 @@ class Sopel(irc.AbstractBot):
 
     def _shutdown(self):
         """Internal bot shutdown method."""
+        LOGGER.info('Shutting down')
         # Stop Job Scheduler
         LOGGER.info('Stopping the Job Scheduler.')
-        self.scheduler.stop()
+        self._scheduler.stop()
 
         try:
-            self.scheduler.join(timeout=15)
+            self._scheduler.join(timeout=15)
         except RuntimeError:
             LOGGER.exception('Unable to stop the Job Scheduler.')
         else:
             LOGGER.info('Job Scheduler stopped.')
 
-        self.scheduler.clear_jobs()
+        self._scheduler.clear_jobs()
 
         # Shutdown plugins
         LOGGER.info(
@@ -917,6 +1025,8 @@ class Sopel(irc.AbstractBot):
 
         # Avoid calling shutdown methods if we already have.
         self.shutdown_methods = []
+
+    # URL callbacks management
 
     def register_url_callback(self, pattern, callback):
         """Register a ``callback`` for URLs matching the regex ``pattern``.
@@ -943,7 +1053,7 @@ class Sopel(irc.AbstractBot):
                 bot.register_url_callback(regex, callback)
 
         It's recommended you completely avoid manual management of URL
-        callbacks through the use of :func:`sopel.module.url`.
+        callbacks through the use of :func:`sopel.plugin.url`.
         """
         if 'url_callbacks' not in self.memory:
             self.memory['url_callbacks'] = tools.SopelMemory()
@@ -978,7 +1088,7 @@ class Sopel(irc.AbstractBot):
                 bot.unregister_url_callback(regex, callback)
 
         It's recommended you completely avoid manual management of URL
-        callbacks through the use of :func:`sopel.module.url`.
+        callbacks through the use of :func:`sopel.plugin.url`.
         """
         if 'url_callbacks' not in self.memory:
             # nothing to unregister
@@ -1071,7 +1181,7 @@ class SopelWrapper(object):
     def __setattr__(self, attr, value):
         return setattr(self._bot, attr, value)
 
-    def say(self, message, destination=None, max_messages=1):
+    def say(self, message, destination=None, max_messages=1, trailing=''):
         """Override ``Sopel.say`` to use trigger source by default.
 
         :param str message: message to say
@@ -1089,7 +1199,7 @@ class SopelWrapper(object):
         """
         if destination is None:
             destination = self._trigger.sender
-        self._bot.say(self._out_pfx + message, destination, max_messages)
+        self._bot.say(self._out_pfx + message, destination, max_messages, trailing)
 
     def action(self, message, destination=None):
         """Override ``Sopel.action`` to use trigger source by default.

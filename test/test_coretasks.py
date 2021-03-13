@@ -1,13 +1,14 @@
 # coding=utf-8
 """coretasks.py tests"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import pytest
 
 from sopel import coretasks
-from sopel.module import VOICE, HALFOP, OP, ADMIN, OWNER
-from sopel.tools import Identifier
+from sopel.irc import isupport
+from sopel.module import ADMIN, HALFOP, OP, OWNER, VOICE
 from sopel.tests import rawlist
+from sopel.tools import Identifier
 
 
 TMP_CONFIG = """
@@ -61,6 +62,7 @@ def test_bot_mixed_mode_removal(mockbot, ircfactory):
         GitHub issue #1575 (https://github.com/sopel-irc/sopel/pull/1575).
     """
     irc = ircfactory(mockbot)
+    irc.bot._isupport = isupport.ISupport(chanmodes=("b", "", "", "m", tuple()))
     irc.channel_joined('#test', ['Uvoice', 'Uop'])
 
     irc.mode_set('#test', '+qao', ['Uvoice', 'Uvoice', 'Uvoice'])
@@ -86,22 +88,72 @@ def test_bot_mixed_mode_types(mockbot, ircfactory):
         GitHub issue #1575 (https://github.com/sopel-irc/sopel/pull/1575).
     """
     irc = ircfactory(mockbot)
+    irc.bot._isupport = isupport.ISupport(chanmodes=("be", "", "", "mn", tuple()))
     irc.channel_joined('#test', [
         'Uvoice', 'Uop', 'Uadmin', 'Uvoice2', 'Uop2', 'Uadmin2'])
-    irc.mode_set('#test', '+amov', ['Uadmin', 'Uop', 'Uvoice'])
+    irc.mode_set('#test', '+amovn', ['Uadmin', 'Uop', 'Uvoice'])
 
     assert mockbot.channels["#test"].privileges[Identifier("Uadmin")] == ADMIN
+    assert mockbot.channels["#test"].modes["m"]
     assert mockbot.channels["#test"].privileges[Identifier("Uop")] == OP
     assert mockbot.channels["#test"].privileges[Identifier("Uvoice")] == VOICE
+    assert mockbot.channels["#test"].modes["n"]
 
-    irc.mode_set('#test', '+abov', ['Uadmin2', 'x!y@z', 'Uop2', 'Uvoice2'])
+    irc.mode_set('#test', '+above', ['Uadmin2', 'x!y@z', 'Uop2', 'Uvoice2', 'a!b@c'])
 
-    assert mockbot.channels["#test"].privileges[Identifier("Uadmin2")] == 0
-    assert mockbot.channels["#test"].privileges[Identifier("Uop2")] == 0
-    assert mockbot.channels["#test"].privileges[Identifier("Uvoice2")] == 0
+    assert mockbot.channels["#test"].privileges[Identifier("Uadmin2")] == ADMIN
+    assert "x!y@z" in mockbot.channels["#test"].modes["b"]
+    assert mockbot.channels["#test"].privileges[Identifier("Uop2")] == OP
+    assert mockbot.channels["#test"].privileges[Identifier("Uvoice2")] == VOICE
+    assert "a!b@c" in mockbot.channels["#test"].modes["e"]
 
-    assert mockbot.backend.message_sent == rawlist('WHO #test'), (
-        'Upon finding an unexpected nick, the bot must send a WHO request.')
+
+def test_bot_unknown_mode(mockbot, ircfactory):
+    """Ensure modes not in PREFIX or CHANMODES trigger a WHO."""
+    irc = ircfactory(mockbot)
+    irc.bot._isupport = isupport.ISupport(chanmodes=("b", "", "", "mnt", tuple()))
+    irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
+    irc.mode_set("#test", "+te", ["Alex"])
+
+    assert mockbot.channels["#test"].privileges[Identifier("Alex")] == 0
+    assert mockbot.backend.message_sent == rawlist(
+        "WHO #test"
+    ), "Upon finding an unknown mode, the bot must send a WHO request."
+
+
+def test_bot_unknown_priv_mode(mockbot, ircfactory):
+    """Ensure modes in `mapping` but not PREFIX are treated as unknown."""
+    irc = ircfactory(mockbot)
+    irc.bot._isupport = isupport.ISupport(prefix={"o": "@", "v": "+"})
+    irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
+    irc.mode_set("#test", "+oh", ["Alex", "Bob"])
+
+    assert mockbot.channels["#test"].privileges[Identifier("Bob")] == 0
+    assert mockbot.backend.message_sent == rawlist(
+        "WHO #test"
+    ), "The bot must treat mapped but non-PREFIX modes as unknown."
+
+
+def test_handle_rpl_channelmodeis(mockbot, ircfactory):
+    """Test handling RPL_CHANNELMODEIS events, response to MODE query."""
+    rpl_channelmodeis = " ".join([
+        ":niven.freenode.net",
+        "324",
+        "TestName",
+        "#test",
+        "+knlt",
+        "hunter2",
+        ":1",
+    ])
+    irc = ircfactory(mockbot)
+    irc.bot._isupport = isupport.ISupport(chanmodes=("b", "k", "l", "mnt", tuple()))
+    irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
+    mockbot.on_message(rpl_channelmodeis)
+
+    assert mockbot.channels["#test"].modes["k"] == "hunter2"
+    assert mockbot.channels["#test"].modes["n"]
+    assert mockbot.channels["#test"].modes["l"] == "1"
+    assert mockbot.channels["#test"].modes["t"]
 
 
 def test_mode_colon(mockbot, ircfactory):
@@ -188,6 +240,7 @@ def test_handle_isupport(mockbot):
 
     # not yet advertised
     assert 'CHARSET' not in mockbot.isupport
+    assert 'NAMESX' not in mockbot.isupport
 
     # update
     mockbot.on_message(
@@ -211,6 +264,9 @@ def test_handle_isupport(mockbot):
     assert 'WHOX' in mockbot.isupport
     assert 'KNOCK' in mockbot.isupport
 
+    # but namesx still isn't!
+    assert 'NAMESX' not in mockbot.isupport
+
     mockbot.on_message(
         ':irc.example.com 005 Sopel '
         'SAFELIST ELIST=CTU CPRIVMSG CNOTICE '
@@ -220,6 +276,49 @@ def test_handle_isupport(mockbot):
     assert 'ELIST' in mockbot.isupport
     assert 'CPRIVMSG' in mockbot.isupport
     assert 'CNOTICE' in mockbot.isupport
+
+
+def test_handle_isupport_namesx(mockbot):
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'SAFELIST ELIST=CTU CPRIVMSG CNOTICE '
+        ':are supported by this server')
+
+    assert 'NAMESX' not in mockbot.isupport
+    assert mockbot.backend.message_sent == []
+    assert 'multi-prefix' not in mockbot.server_capabilities
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'NAMESX '
+        ':are supported by this server')
+
+    assert 'NAMESX' in mockbot.isupport
+    assert mockbot.backend.message_sent == rawlist('PROTOCTL NAMESX')
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'NAMESX '
+        ':are supported by this server')
+
+    assert len(mockbot.backend.message_sent) == 1, 'No need to resend!'
+
+
+def test_handle_isupport_namesx_with_multi_prefix(mockbot):
+    # set multi-prefix
+    mockbot.server_capabilities['multi-prefix'] = None
+
+    # send NAMESX in ISUPPORT
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'NAMESX '
+        ':are supported by this server')
+
+    assert 'NAMESX' in mockbot.isupport
+    assert mockbot.backend.message_sent == [], (
+        'Sopel must not send PROTOCTL NAMESX '
+        'when multi-prefix capability is available'
+    )
 
 
 def test_handle_rpl_myinfo(mockbot):
@@ -247,3 +346,10 @@ def test_handle_rpl_myinfo(mockbot):
     assert mockbot.myinfo.client == 'TestName'
     assert mockbot.myinfo.servername == 'irc.example.net'
     assert mockbot.myinfo.version == 'example-1.2.3'
+
+
+def test_sasl_plain_token_generation():
+    """Make sure SASL PLAIN tokens match the expected format."""
+    assert (
+        coretasks._make_sasl_plain_token('sopel', 'sasliscool') ==
+        'sopel\x00sopel\x00sasliscool')

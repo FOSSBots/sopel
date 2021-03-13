@@ -1,28 +1,30 @@
 # coding=utf-8
 """
-find.py - Sopel Spelling Correction Module
-This module will fix spelling errors if someone corrects them
+find.py - Sopel Spelling Correction Plugin
+This plugin will fix spelling errors if someone corrects them
 using the sed notation (s///) commonly found in vi/vim.
 
 Copyright 2011, Michael Yanovich, yanovich.net
 Copyright 2013, Elsie Powell, embolalia.com
-Includes contributions from: dgw, Matt Meinwald, and Morgan Goose
+Copyright 2020, dgw, technobabbl.es
+Includes contributions from: Matt Meinwald, and Morgan Goose
 Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
+from collections import deque
 import re
 
-from sopel.tools import Identifier, SopelMemory
-from sopel import module
+from sopel import plugin
 from sopel.formatting import bold
+from sopel.tools import Identifier, SopelIdentifierMemory
 
 
 def setup(bot):
     if 'find_lines' not in bot.memory:
-        bot.memory['find_lines'] = SopelMemory()
+        bot.memory['find_lines'] = SopelIdentifierMemory()
 
 
 def shutdown(bot):
@@ -32,31 +34,31 @@ def shutdown(bot):
         pass
 
 
-@module.echo
-@module.rule('.*')
-@module.priority('low')
-@module.require_chanmsg
-@module.unblockable
+@plugin.echo
+@plugin.rule('.*')
+@plugin.priority('low')
+@plugin.require_chanmsg
+@plugin.unblockable
 def collectlines(bot, trigger):
     """Create a temporary log of what people say"""
     # Add a log for the channel and nick, if there isn't already one
     if trigger.sender not in bot.memory['find_lines']:
-        bot.memory['find_lines'][trigger.sender] = SopelMemory()
+        bot.memory['find_lines'][trigger.sender] = SopelIdentifierMemory()
     if trigger.nick not in bot.memory['find_lines'][trigger.sender]:
-        bot.memory['find_lines'][trigger.sender][trigger.nick] = list()
+        bot.memory['find_lines'][trigger.sender][trigger.nick] = deque(maxlen=10)
 
     # Update in-memory list of the user's lines in the channel
     line_list = bot.memory['find_lines'][trigger.sender][trigger.nick]
     line = trigger.group()
-    if line.startswith("s/"):  # Don't remember substitutions
+    if line.startswith('s/') or line.startswith('s|'):
+        # Don't remember substitutions
         return
-    elif line.startswith("\x01ACTION"):  # For /me messages
+    # store messages in reverse order (most recent first)
+    elif line.startswith('\x01ACTION'):  # For /me messages
         line = line[:-1]
-        line_list.append(line)
+        line_list.appendleft(line)
     else:
-        line_list.append(line)
-
-    del line_list[:-10]  # Keep the log to 10 lines per person
+        line_list.appendleft(line)
 
 
 def _cleanup_channel(bot, channel):
@@ -71,10 +73,10 @@ def _cleanup_nickname(bot, nick, channel=None):
             bot.memory['find_lines'][channel].pop(nick, None)
 
 
-@module.echo
-@module.event('PART')
-@module.priority('low')
-@module.unblockable
+@plugin.echo
+@plugin.event('PART')
+@plugin.priority('low')
+@plugin.unblockable
 def part_cleanup(bot, trigger):
     """Clean up cached data when a user leaves a channel."""
     if trigger.nick == bot.nick:
@@ -85,20 +87,20 @@ def part_cleanup(bot, trigger):
         _cleanup_nickname(bot, trigger.nick, trigger.sender)
 
 
-@module.echo
-@module.event('QUIT')
-@module.priority('low')
-@module.unblockable
+@plugin.echo
+@plugin.event('QUIT')
+@plugin.priority('low')
+@plugin.unblockable
 def quit_cleanup(bot, trigger):
     """Clean up cached data after a user quits IRC."""
     # If Sopel itself quits, shutdown() will handle the cleanup.
     _cleanup_nickname(bot, trigger.nick)
 
 
-@module.echo
-@module.event('KICK')
-@module.priority('low')
-@module.unblockable
+@plugin.echo
+@plugin.event('KICK')
+@plugin.priority('low')
+@plugin.unblockable
 def kick_cleanup(bot, trigger):
     """Clean up cached data when a user is kicked from a channel."""
     nick = Identifier(trigger.args[1])
@@ -112,38 +114,58 @@ def kick_cleanup(bot, trigger):
 
 # Match nick, s/find/replace/flags. Flags and nick are optional, nick can be
 # followed by comma or colon, anything after the first space after the third
-# slash is ignored, you can escape slashes with backslashes, and if you want to
-# search for an actual backslash followed by an actual slash, you're shit out of
-# luck because this is the fucking regex of death as it is.
-@module.rule(r"""(?:
-            (\S+)           # Catch a nick in group 1
-          [:,]\s+)?         # Followed by colon/comma and whitespace, if given
-          s/                # The literal s/
-          (                 # Group 2 is the thing to find
-            (?:\\/ | [^/])+ # One or more non-slashes or escaped slashes
-          )/(               # Group 3 is what to replace with
-            (?:\\/ | [^/])* # One or more non-slashes or escaped slashes
-          )
-          (?:/(\S+))?       # Optional slash, followed by group 4 (flags)
-          """)
-@module.priority('high')
+# slash is ignored, and you can use either a slash or a pipe.
+# If you want to search for an actual slash AND a pipe in the same message,
+# you can escape your separator, in old and/or new.
+@plugin.rule(r"""(?:
+             (?P<nick>\S+)    # Catch a nick in group 1
+             [:,]\s+)?        # Followed by optional colon/comma and whitespace
+             s(?P<sep>/)      # The literal s and a separator / as group 2
+             (?P<old>         # Group 3 is the thing to find
+               (?:\\/|[^/])+  # One or more non-slashes or escaped slashes
+             )
+             /                # The separator again
+             (?P<new>         # Group 4 is what to replace with
+               (?:\\/|[^/])*  # One or more non-slashes or escaped slashes
+             )
+             (?:/             # Optional separator followed by group 5 (flags)
+                (?P<flags>\S+)
+             )?
+            """)
+@plugin.rule(r"""(?:
+             (?P<nick>\S+)    # Catch a nick in group 1
+             [:,]\s+)?        # Followed by optional colon/comma and whitespace
+             s(?P<sep>\|)     # The literal s and a separator | as group 2
+             (?P<old>         # Group 3 is the thing to find
+               (?:\\\||[^|])+  # One or more non-pipe or escaped pipe
+             )
+             \|               # The separator again
+             (?P<new>         # Group 4 is what to replace with
+               (?:\\\||[^|])* # One or more non-pipe or escaped pipe
+             )
+             (?:|             # Optional separator followed by group 5 (flags)
+                (?P<flags>\S+)
+             )?
+            """)
+@plugin.priority('high')
 def findandreplace(bot, trigger):
     # Don't bother in PM
     if trigger.is_privmsg:
         return
 
     # Correcting other person vs self.
-    rnick = Identifier(trigger.group(1) or trigger.nick)
+    rnick = Identifier(trigger.group('nick') or trigger.nick)
 
     # only do something if there is conversation to work with
-    history = bot.memory['find_lines'].get(trigger.sender, {}).get(rnick, [])
+    history = bot.memory['find_lines'].get(trigger.sender, {}).get(rnick, None)
     if not history:
         return
 
-    old = trigger.group(2).replace(r'\/', '/')
-    new = trigger.group(3).replace(r'\/', '/')
+    sep = trigger.group('sep')
+    old = trigger.group('old').replace('\\%s' % sep, sep)
+    new = bold(trigger.group('new')).replace('\\%s' % sep, sep)
     me = False  # /me command
-    flags = (trigger.group(4) or '')
+    flags = trigger.group('flags') or ''
 
     # If g flag is given, replace all. Otherwise, replace once.
     if 'g' in flags:
@@ -165,27 +187,27 @@ def findandreplace(bot, trigger):
     # Look back through the user's lines in the channel until you find a line
     # where the replacement works
     new_phrase = None
-    for line in reversed(history):
+    for line in history:
         if line.startswith("\x01ACTION"):
             me = True  # /me command
             line = line[8:]
         else:
             me = False
-        new_phrase = repl(line)
-        if new_phrase != line:  # we are done
+        replaced = repl(line)
+        if replaced != line:  # we are done
+            new_phrase = replaced
             break
 
-    if not new_phrase or new_phrase == line:
+    if not new_phrase:
         return  # Didn't find anything
 
     # Save the new "edited" message.
     action = (me and '\x01ACTION ') or ''  # If /me message, prepend \x01ACTION
-    history.append(action + new_phrase)
-    del history[:-10]
+    history.appendleft(action + new_phrase)  # history is in most-recent-first order
 
     # output
     if not me:
-        new_phrase = '%s to say: %s' % (bold('meant'), new_phrase)
+        new_phrase = 'meant to say: %s' % new_phrase
     if trigger.group(1):
         phrase = '%s thinks %s %s' % (trigger.nick, rnick, new_phrase)
     else:

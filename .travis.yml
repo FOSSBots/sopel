@@ -1,6 +1,8 @@
+version: ~> 1.0
+os: linux  # we'll extend to other platforms Eventually™
 dist: bionic  # most recent base image by default
 language: python
-matrix:
+jobs:
   include:
     - name: "Python 2.7 on Bionic"
       python: 2.7
@@ -19,20 +21,16 @@ matrix:
       python: 3.7
     - name: "Python 3.8 on Bionic"
       python: 3.8
+    - name: "Python 3.9 on Bionic"
+      python: 3.9
 git:
   submodules: false
-branches:
-  only:
-    - master
-    - /^\d+\.\d+\.x$/  # allows building maintenance branches
-    - /^v?\d+\.\d+(\.\d+)?(-\S*)?$/  # allows building version tags
-    - /^travis-.+$/  # allows branch names intended to test Travis changes/problems
-sudo: false  # Enables running on faster infrastructure.
 cache:
   directories:
     - $HOME/.cache/pip
 install:
-  - pip install --upgrade "setuptools<=39.2.0"  # last version to support Python 3.3
+  # setuptools should be left alone once we drop Python 3.3 support
+  - pip install --upgrade "setuptools<=39.2.0; python_version < '3.9'"
   - pip install --upgrade -r requirements.txt -r dev-requirements.txt
   - python setup.py develop
 script:

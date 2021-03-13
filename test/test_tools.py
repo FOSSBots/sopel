@@ -1,11 +1,119 @@
 # coding=utf-8
 """Tests sopel.tools"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
+import re
 
-from datetime import timedelta
+import pytest
+
 from sopel import tools
-from sopel.tools.time import seconds_to_human
+
+
+TMP_CONFIG = """
+[core]
+owner = testnick
+nick = TestBot
+enable = coretasks
+"""
+
+
+@pytest.fixture
+def nick():
+    return 'Sopel'
+
+
+@pytest.fixture
+def alias_nicks():
+    return ['Soap', 'Pie']
+
+
+@pytest.fixture
+def prefix():
+    return '.'
+
+
+@pytest.fixture
+def prefix_regex():
+    re.escape(prefix())
+
+
+@pytest.fixture
+def command():
+    return 'testcmd'
+
+
+@pytest.fixture
+def groups(command):
+    return {
+        3: "three",
+        4: "four",
+        5: "five",
+        6: "six",
+    }
+
+
+@pytest.fixture
+def command_line(prefix, command, groups):
+    return "{}{} {}".format(prefix, command, ' '.join(groups.values()))
+
+
+@pytest.fixture
+def nickname_command_line(nick, command, groups):
+    return "{}: {} {}".format(nick, command, ' '.join(groups.values()))
+
+
+@pytest.fixture
+def action_command_line(command, groups):
+    return "{} {}".format(command, ' '.join(groups.values()))
+
+
+def test_command_groups(prefix, command, groups, command_line):
+    regex = tools.get_command_regexp(prefix, command)
+    match = re.match(regex, command_line)
+    assert match.group(0) == command_line
+    assert match.group(1) == command
+    assert match.group(2) == ' '.join(groups.values())
+    assert match.group(3) == groups[3]
+    assert match.group(4) == groups[4]
+    assert match.group(5) == groups[5]
+    assert match.group(6) == groups[6]
+
+
+def test_nickname_command_groups(command, nick, groups, nickname_command_line):
+    regex = tools.get_nickname_command_regexp(nick, command, [])
+    match = re.match(regex, nickname_command_line)
+    assert match.group(0) == nickname_command_line
+    assert match.group(1) == command
+    assert match.group(2) == ' '.join(groups.values())
+    assert match.group(3) == groups[3]
+    assert match.group(4) == groups[4]
+    assert match.group(5) == groups[5]
+    assert match.group(6) == groups[6]
+
+
+def test_nickname_command_aliased(command, nick, alias_nicks, groups, nickname_command_line):
+    aliased_command_line = nickname_command_line.replace(nick, alias_nicks[0])
+    regex = tools.get_nickname_command_regexp(nick, command, alias_nicks)
+    match = re.match(regex, aliased_command_line)
+    assert match.group(0) == aliased_command_line
+    assert match.group(1) == command
+    assert match.group(2) == ' '.join(groups.values())
+    assert match.group(3) == groups[3]
+    assert match.group(4) == groups[4]
+    assert match.group(5) == groups[5]
+    assert match.group(6) == groups[6]
+
+
+def test_action_command_groups(command, groups, action_command_line):
+    regex = tools.get_action_command_regexp(command)
+    match = re.match(regex, action_command_line)
+    assert match.group(0) == action_command_line
+    assert match.group(1) == command
+    assert match.group(2) == ' '.join(groups.values())
+    assert match.group(3) == groups[3]
+    assert match.group(4) == groups[4]
+    assert match.group(5) == groups[5]
+    assert match.group(6) == groups[6]
 
 
 def test_get_sendable_message_default():
@@ -95,15 +203,71 @@ def test_get_sendable_message_two_bytes():
     assert excess == 'α α'
 
 
-def test_time_timedelta_formatter():
-    payload = 10000
-    assert seconds_to_human(payload) == '2 hours, 46 minutes ago'
+def test_chain_loaders(configfactory):
+    re_numeric = re.compile(r'\d+')
+    re_text = re.compile(r'\w+')
+    settings = configfactory('test.cfg', TMP_CONFIG)
 
-    payload = -2938124
-    assert seconds_to_human(payload) == 'in 1 month, 3 days'
+    def loader_numeric(settings):
+        return [re_numeric]
 
-    payload = timedelta(hours=4)
-    assert seconds_to_human(payload) == '4 hours ago'
+    def loader_text(settings):
+        return [re_text]
 
-    payload = timedelta(hours=-4)
-    assert seconds_to_human(payload) == 'in 4 hours'
+    loader = tools.chain_loaders(loader_numeric, loader_text)
+
+    assert callable(loader)
+    results = loader(settings)
+
+    assert results == [re_numeric, re_text]
+
+
+def test_sopel_identifier_memory_str():
+    user = tools.Identifier('Exirel')
+    memory = tools.SopelIdentifierMemory()
+    test_value = 'king'
+
+    memory['Exirel'] = test_value
+    assert user in memory
+    assert 'Exirel' in memory
+    assert 'exirel' in memory
+    assert 'exi' not in memory
+    assert '#channel' not in memory
+
+    assert memory[user] == test_value
+    assert memory['Exirel'] == test_value
+    assert memory['exirel'] == test_value
+
+
+def test_sopel_identifier_memory_id():
+    user = tools.Identifier('Exirel')
+    memory = tools.SopelIdentifierMemory()
+    test_value = 'king'
+
+    memory[user] = test_value
+    assert user in memory
+    assert 'Exirel' in memory
+    assert 'exirel' in memory
+    assert 'exi' not in memory
+    assert '#channel' not in memory
+
+    assert memory[user] == test_value
+    assert memory['Exirel'] == test_value
+    assert memory['exirel'] == test_value
+
+
+def test_sopel_identifier_memory_channel_str():
+    channel = tools.Identifier('#adminchannel')
+    memory = tools.SopelIdentifierMemory()
+    test_value = 'perfect'
+
+    memory['#adminchannel'] = test_value
+    assert channel in memory
+    assert '#adminchannel' in memory
+    assert '#AdminChannel' in memory
+    assert 'adminchannel' not in memory
+    assert 'Exirel' not in memory
+
+    assert memory[channel] == test_value
+    assert memory['#adminchannel'] == test_value
+    assert memory['#AdminChannel'] == test_value

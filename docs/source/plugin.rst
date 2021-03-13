@@ -1,96 +1,131 @@
-Plugin structure
-================
+===========================
+Plugins: Developer Overview
+===========================
 
-A Sopel plugin consists of a Python module containing one or more
-``callable``\s. It may optionally also contain ``configure``, ``setup``, and
-``shutdown`` hooks.
+.. toctree::
+   :titlesonly:
 
-.. py:function:: callable(bot, trigger)
+   plugin/what
+   plugin/anatomy
+   plugin/bot
+   plugin/decorators
+   plugin/advanced
+   plugin/internals
 
-    :param bot: the bot's instance
-    :type bot: :class:`sopel.bot.SopelWrapper`
-    :param trigger: the object that triggered the call
-    :type trigger: :class:`sopel.trigger.Trigger`
+Plugin glossary
+===============
 
-    A callable is any function which takes as its arguments a
-    :class:`sopel.bot.SopelWrapper` object and a :class:`sopel.trigger.Trigger`
-    object, and is wrapped with appropriate decorators from
-    :mod:`sopel.module`. The ``bot`` provides the ability to send messages to
-    the network and check the state of the bot. The ``trigger`` provides
-    information about the line which triggered this function to be called.
+.. glossary::
+   :sorted:
 
-    The return value of these function is ignored, unless it is
-    :const:`sopel.module.NOLIMIT`, in which case rate limiting will not be
-    applied for that call.
+   Sopel plugin
+      A Sopel plugin is a plugin made for Sopel. It contains
+      :term:`rules <Rule>`, it has a setup/shutdown cycle, and it can extend
+      the bot's configuration with its own
+      :class:`section <sopel.config.types.StaticSection>`.
 
-    Note that the name can, and should, be anything - it doesn't need to be
-    called "callable".
+      It is of one of the possible plugin types, preferably
+      a :term:`Single file plugin`, or an :term:`Entry point plugin`. The other
+      two types are :term:`Folder plugin` and :term:`Namespace package plugin`.
 
-.. py:function:: setup(bot)
+   Rule
+      A rule defines how to match a specific message from the IRC server,
+      usually with a regular expression. It also defines how to react to these
+      messages. For that it can execute a :term:`callable <Plugin callable>`.
 
-    :param bot: the bot's instance
-    :type bot: :class:`sopel.bot.Sopel`
+   Rule system
+      The rule system is how Sopel manages and handles :term:`rules <Rule>`.
 
-    This is an optional function of a plugin, which will be called while the
-    module is being loaded. The purpose of this function is to perform whatever
-    actions are needed to allow a module to function properly (e.g, ensuring
-    that the appropriate configuration variables exist and are set). Note that
-    this normally occurs prior to connection to the server, so the behavior of
-    the messaging functions on the :class:`sopel.bot.Sopel` object it's passed
-    is undefined.
+   Generic rule
+      A generic rule matches any message using a regular expression. It doesn't
+      use any specific format, unlike a :term:`Named rule`. It can match the
+      whole message (:term:`Match rule`), or any part of it
+      (:term:`Search rule`), or it may trigger for every match in the message
+      (:term:`Find rule`).
 
-    Throwing an exception from this function (such as a
-    :exc:`sopel.config.ConfigurationError`) will prevent any callables in the
-    module from being registered, and provide an error message to the user.
-    This is useful when requiring the presence of configuration values or
-    making other environmental requirements.
+   Match rule
+      A match rule is a :term:`Generic rule` that triggers when the regex
+      matches the whole message.
 
-    The bot will not continue loading modules or connecting during the
-    execution of this function. As such, an infinite loop (such as an
-    unthreaded polling loop) will cause the bot to hang.
+   Search rule
+      A search rule is a :term:`Generic rule` that triggers when the regex
+      matches any part of the message.
 
-.. py:function:: shutdown(bot)
+   Find rule
+      A find rule is a :term:`Generic rule` that triggers for every time the
+      regex matches a part of the message.
 
-    :param bot: the bot's instance
-    :type bot: :class:`sopel.bot.Sopel`
+   Named rule
+      A named rule is a rule that uses a regular expression with a specific
+      format: with a name, and usually with a prefix, or a set of specific
+      conditions. See :term:`Command`, :term:`Action command`, and
+      :term:`Nick command`. A named rule always matches the message from its
+      start, and it accepts any number of arguments::
 
-    This is an optional function of a module, which will be called while the
-    bot is quitting. Note that this normally occurs after closing connection
-    to the server, so the behavior of the messaging functions on the
-    :class:`sopel.bot.Sopel` object it's passed is undefined. The purpose of
-    this function is to perform whatever actions are needed to allow a module
-    to properly clean up (e.g, ensuring that any temporary cache files are
-    deleted).
+         [nick] <prefix><name> [<arg1> <arg2> <...> <argN>]
 
-    The bot will not continue notifying other modules or continue quitting
-    during the execution of this function. As such, an infinite loop (such as
-    an unthreaded polling loop) will cause the bot to hang.
+      A named rule can have aliases, i.e. alternative names used to trigger
+      the rule.
 
-    .. versionadded:: 4.1
+   Command
+      A command is a :term:`Named rule` that reacts to a :term:`Command prefix`
+      and a name.
 
-.. py:function:: configure(config)
+   Command prefix
+      The command prefix is a regular expression joined to a :term:`Command`'s
+      name as its prefix. It is defined by configuration using
+      :attr:`core.prefix <sopel.config.core_section.CoreSection.prefix>`.
 
-    :param bot: the bot's configuration object
-    :type bot: :class:`sopel.config.Config`
+   Action command
+      An action command is a :term:`Named rule` that reacts to a name in a
+      message sent with the ``ACTION`` CTCP command.
 
-    This is an optional function of a module, which will be called during the
-    user's setup of the bot. It's intended purpose is to use the methods of the
-    passed :class:`sopel.config.Config` object in order to create the
-    configuration variables it needs to function properly.
+   Nick command
+      A nick command (or nickname command) is a :term:`Named rule` that reacts
+      to a name prefixed by the bot's nickname in a message.
 
-    .. versionadded:: 3.0
+   URL callback
+      A URL callback is a rule that triggers for every URL in a message.
 
-sopel.module
-------------
-.. automodule:: sopel.module
-   :members:
+   Rate limiting
+      How often a :term:`rule <Rule>` can be triggered on a per-user basis, in
+      a channel, or across the IRC network.
 
-sopel.plugins
--------------
-.. automodule:: sopel.plugins
-   :members:
+   Plugin callable
+      A plugin callable is a Python callable, that handles a specific message
+      from the IRC server matching a :term:`Rule`. See also the
+      :ref:`Plugin Anatomy: callables <plugin-anatomy-callables>` section for
+      the plugin callable signature.
 
-sopel.plugins.handlers
-----------------------
-.. automodule:: sopel.plugins.handlers
-   :members:
+   Plugin job
+      A plugin job is a Python callable, that executes periodically on a
+      schedule. See also the :ref:`Plugin Anatomy: jobs <plugin-anatomy-jobs>`
+      section for the plugin job signature.
+
+   Single file plugin
+      A :term:`Sopel plugin` composed of a single Python file. Can be loaded by
+      Sopel even when it's not available from ``sys.path``.
+
+   Folder plugin
+      A plugin composed of a directory that contains a ``__init__.py`` file.
+      It is not considered as a proper Python package unless its parent
+      directory is in ``sys.path``. As they can create problems, they are not
+      recommended, and either :term:`Single file plugin` or
+      :term:`Entry point plugin` should be used instead.
+
+   Namespace package plugin
+      A plugin that is a Python namespace package, i.e. a package within a
+      specific namespace (``sopel_modules.<name>``, where ``sopel_modules`` is
+      the namespace, and ``<name>`` is the plugin's name). This is the old way
+      to distribute plugins and is not recommended; :term:`Entry point plugin`
+      should be used instead.
+
+   Entry point plugin
+      A plugin that is an installed Python package and exposed through the
+      ``sopel.plugins`` setuptools entry point.
+
+   Sopelunking
+      Action performed by a :term:`Sopelunker`.
+
+   Sopelunker
+      A person who does :term:`Sopelunking`.

@@ -1,12 +1,12 @@
 # coding=utf-8
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 
 class events(object):
     """An enumeration of all the standardized and notable IRC numeric events
 
-    This allows you to do, for example, ``@module.event(events.RPL_WELCOME)``
-    rather than ``@module.event('001')``
+    This allows you to do, for example, ``@plugin.event(events.RPL_WELCOME)``
+    rather than ``@plugin.event('001')``
     """
     # ###################################################### Non-RFC / Non-IRCv3
     # Only add things here if they're actually in common use across multiple

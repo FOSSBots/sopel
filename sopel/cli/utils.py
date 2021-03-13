@@ -1,5 +1,5 @@
 # coding=utf-8
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import inspect
 import logging
@@ -39,7 +39,7 @@ def _colored(text, color, reset=True):
 
 
 def green(text, reset=True):
-    """Add ANSI escape sequences to make the text green in term
+    """Add ANSI escape sequences to make the text green in terminal.
 
     :param str text: text to colorized in green
     :param bool reset: if the text color must be reset after (default ``True``)
@@ -50,7 +50,7 @@ def green(text, reset=True):
 
 
 def yellow(text, reset=True):
-    """Add ANSI escape sequences to make the text yellow in term
+    """Add ANSI escape sequences to make the text yellow in terminal.
 
     :param str text: text to colorized in yellow
     :param bool reset: if the text color must be reset after (default ``True``)
@@ -61,7 +61,7 @@ def yellow(text, reset=True):
 
 
 def red(text, reset=True):
-    """Add ANSI escape sequences to make the text red in term
+    """Add ANSI escape sequences to make the text red in terminal.
 
     :param str text: text to colorized in red
     :param bool reset: if the text color must be reset after (default ``True``)
@@ -72,7 +72,7 @@ def red(text, reset=True):
 
 
 def wizard(filename):
-    """Global Configuration Wizard
+    """Global Configuration Wizard.
 
     :param str filename: name of the new file to be created
     :return: the created configuration object
@@ -127,7 +127,7 @@ def wizard(filename):
 
 
 def plugins_wizard(filename):
-    """Plugins Configuration Wizard
+    """Plugins Configuration Wizard.
 
     :param str filename: path to an existing Sopel configuration
     :return: the configuration object
@@ -173,7 +173,7 @@ def _plugin_wizard(settings, plugin):
 
 
 def enumerate_configs(config_dir, extension='.cfg'):
-    """List configuration files from ``config_dir`` with ``extension``
+    """List configuration files from ``config_dir`` with ``extension``.
 
     :param str config_dir: path to the configuration directory
     :param str extension: configuration file's extension (default to ``.cfg``)
@@ -201,7 +201,7 @@ def enumerate_configs(config_dir, extension='.cfg'):
 
 
 def find_config(config_dir, name, extension='.cfg'):
-    """Build the absolute path for the given configuration file ``name``
+    """Build the absolute path for the given configuration file ``name``.
 
     :param str config_dir: path to the configuration directory
     :param str name: configuration file ``name``
@@ -266,6 +266,9 @@ def add_common_arguments(parser):
     ``config`` and ``configdir`` options that can be used to find and load
     Sopel's settings.
 
+    The default value for ``config`` is either the value of the environment
+    variable ``SOPEL_CONFIG``, or the string ``default``.
+
     .. seealso::
 
         The :func:`sopel.cli.utils.load_settings` function uses an ``options``
@@ -274,21 +277,28 @@ def add_common_arguments(parser):
     """
     parser.add_argument(
         '-c', '--config',
-        default='default',
+        default=os.environ.get('SOPEL_CONFIG') or 'default',
         metavar='filename',
         dest='config',
         help=inspect.cleandoc("""
             Use a specific configuration file.
             A config name can be given and the configuration file will be
-            found in Sopel\'s homedir (defaults to ``~/.sopel/default.cfg``).
+            found in Sopel's homedir (defaults to ``~/.sopel/default.cfg``).
             An absolute pathname can be provided instead to use an
             arbitrary location.
+            When the ``SOPEL_CONFIG`` environment variable is set and not
+            empty, it is used as the default value.
         """))
     parser.add_argument(
         '--config-dir',
-        default=config.DEFAULT_HOMEDIR,
+        default=os.environ.get('SOPEL_CONFIG_DIR') or config.DEFAULT_HOMEDIR,
         dest='configdir',
-        help='Look for configuration files in this directory.')
+        help=inspect.cleandoc("""
+            Look for configuration files in this directory.
+            By default, Sopel will search in ``~/.sopel``.
+            When the ``SOPEL_CONFIG_DIR`` environment variable is set and not
+            empty, it is used as the default value.
+        """))
 
 
 def load_settings(options):
@@ -302,14 +312,14 @@ def load_settings(options):
     :raise sopel.config.ConfigurationError: raised when configuration is
                                             invalid
 
-    This function loads Sopel's settings from one of these sources:
+    This function loads Sopel's settings from ``options.config``. This option's
+    value should be from one of these sources:
 
-    * value of ``options.config``, if given,
-    * ``SOPEL_CONFIG`` environment variable, if no option is given,
-    * otherwise the ``default`` configuration is loaded,
+    * given by the command line argument,
+    * ``SOPEL_CONFIG`` environment variable, if the argument is not used,
+    * otherwise it should default to ``default``,
 
-    then loads the settings and returns it as a :class:`~sopel.config.Config`
-    object.
+    then it returns it as a :class:`~sopel.config.Config` object.
 
     If the configuration file can not be found, a
     :exc:`sopel.config.ConfigurationNotFound` error will be raised.
@@ -320,17 +330,11 @@ def load_settings(options):
         ``config`` and ``configdir``.
 
         The :func:`sopel.cli.utils.add_common_arguments` function should be
-        used to add these options to the argument parser.
+        used to add these options to the argument parser. This function is also
+        responsible for using the environment variable or the default value.
 
     """
-    # Default if no options.config or no env var or if they are empty
-    name = 'default'
-    if options.config:
-        name = options.config
-    elif 'SOPEL_CONFIG' in os.environ:
-        name = os.environ['SOPEL_CONFIG'] or name  # use default if empty
-
-    filename = find_config(options.configdir, name)
+    filename = find_config(options.configdir, options.config)
 
     if not os.path.isfile(filename):
         raise config.ConfigurationNotFound(filename=filename)

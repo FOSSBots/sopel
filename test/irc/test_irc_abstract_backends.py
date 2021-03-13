@@ -1,6 +1,6 @@
 # coding=utf-8
 """Tests for core ``sopel.irc.backends``"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 
 from sopel.irc.abstract_backends import AbstractIRCBackend
@@ -212,7 +212,7 @@ def test_send_part_text():
 def test_send_quit():
     bot = BotCollector()
     backend = MockIRCBackend(bot)
-    backend.connected = True  # TODO: refactor without attribute
+    backend.connected = True
 
     backend.send_quit()
     expected = 'QUIT\r\n'
@@ -223,7 +223,7 @@ def test_send_quit():
 def test_send_quit_text():
     bot = BotCollector()
     backend = MockIRCBackend(bot)
-    backend.connected = True  # TODO: refactor without attribute
+    backend.connected = True
 
     backend.send_quit(reason='Bye freenode!')
     expected = 'QUIT :Bye freenode!\r\n'
@@ -234,7 +234,7 @@ def test_send_quit_text():
 def test_send_quit_disconnected():
     bot = BotCollector()
     backend = MockIRCBackend(bot)
-    backend.connected = False  # TODO: refactor without attribute
+    backend.connected = False
 
     backend.send_quit()
     backend.send_quit(reason='Bye freenode!')

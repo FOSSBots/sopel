@@ -1,13 +1,13 @@
 # coding=utf-8
 """
-remind.py - Sopel Reminder Module
+remind.py - Sopel Reminder Plugin
 Copyright 2011, Sean B. Palmer, inamidst.com
 Copyright 2019, dgw, technobabbl.es
 Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import collections
 from datetime import datetime
@@ -19,8 +19,8 @@ import time
 
 import pytz
 
-from sopel import tools, module
-from sopel.tools.time import get_timezone, format_time, validate_timezone
+from sopel import plugin, tools
+from sopel.tools.time import format_time, get_timezone, validate_timezone
 
 
 LOGGER = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def shutdown(bot):
     del bot.rdb
 
 
-@module.interval(2.5)
+@plugin.interval(2.5)
 def remind_monitoring(bot):
     """Check for reminder"""
     now = int(time.time())
@@ -217,16 +217,16 @@ SCALING = collections.OrderedDict([
 PERIODS = '|'.join(SCALING.keys())
 
 
-@module.commands('in')
-@module.example('.in 3h45m Go to class')
+@plugin.command('in')
+@plugin.example('.in 3h45m Go to class')
 def remind_in(bot, trigger):
     """Gives you a reminder in the given amount of time."""
     if not trigger.group(2):
         bot.reply("Missing arguments for reminder command.")
-        return module.NOLIMIT
+        return plugin.NOLIMIT
     if trigger.group(3) and not trigger.group(4):
         bot.reply("No message given for reminder.")
-        return module.NOLIMIT
+        return plugin.NOLIMIT
     duration = 0
     message = filter(None, re.split(r'(\d+(?:\.\d+)? ?(?:(?i)' + PERIODS + ')) ?',
                                     trigger.group(2))[1:])
@@ -242,7 +242,8 @@ def remind_in(bot, trigger):
             reminder = reminder + piece
             stop = True
     if duration == 0:
-        return bot.reply("Sorry, didn't understand the input.")
+        bot.reply("Sorry, didn't understand the input.")
+        return plugin.NOLIMIT
 
     if duration % 1:
         duration = int(duration) + 1
@@ -446,11 +447,11 @@ def parse_regex_match(match, default_timezone=None):
     )
 
 
-@module.commands('at')
-@module.example('.at 13:47 Do your homework!', user_help=True)
-@module.example('.at 03:14:07 2038-01-19 End of signed 32-bit int timestamp',
+@plugin.command('at')
+@plugin.example('.at 13:47 Do your homework!', user_help=True)
+@plugin.example('.at 03:14:07 2038-01-19 End of signed 32-bit int timestamp',
                 user_help=True)
-@module.example('.at 00:01 25/12 Open your gift!', user_help=True)
+@plugin.example('.at 00:01 25/12 Open your gift!', user_help=True)
 def remind_at(bot, trigger):
     """Gives you a reminder at the given time.
 
@@ -466,15 +467,15 @@ def remind_at(bot, trigger):
     """
     if not trigger.group(2):
         bot.reply("No arguments given for reminder command.")
-        return module.NOLIMIT
+        return plugin.NOLIMIT
     if trigger.group(3) and not trigger.group(4):
         bot.reply("No message given for reminder.")
-        return module.NOLIMIT
+        return plugin.NOLIMIT
 
     match = REGEX_AT.match(trigger.group(2))
     if not match:
         bot.reply("Sorry, but I didn't understand your input.")
-        return module.NOLIMIT
+        return plugin.NOLIMIT
 
     default_timezone = get_timezone(bot.db, bot.config, None,
                                     trigger.nick, trigger.sender)
@@ -486,7 +487,7 @@ def remind_at(bot, trigger):
     except ValueError as error:
         bot.reply(
             "Sorry, but I didn't understand your input: %s" % str(error))
-        return module.NOLIMIT
+        return plugin.NOLIMIT
 
     # save reminder
     timestamp = create_reminder(bot, trigger, duration, reminder.message)
@@ -502,3 +503,73 @@ def remind_at(bot, trigger):
         bot.reply('Okay, will remind at %s' % human_time)
     else:
         bot.reply('Okay, will remind in %s secs' % duration)
+
+
+@plugin.command('reminders')
+@plugin.example('.reminders forget *', user_help=True)
+@plugin.example('.reminders count #channel', user_help=True)
+@plugin.example('.reminders count', user_help=True)
+def manage_reminders(bot, trigger):
+    """Count or forget your reminders in the current channel.
+
+    Use a subcommand "count" (default) or "forget". The second argument is
+    optional and can be either a channel name, your nick, or * (for all).
+    """
+    owner = trigger.nick
+    action = trigger.group(3) or trigger.sender
+    target = trigger.group(4)
+
+    if action not in ['count', 'forget'] and not target:
+        # assume `.reminders` or `.reminders #channel`
+        # in that case, invalid action will just count 0 reminder
+        action, target = 'count', action
+
+    if action == 'count':
+        tpl = 'You have {count} reminders for all channels.'
+        nick_reminders = (
+            (timestamp, channel, nick, message)
+            for timestamp, reminders in bot.rdb.items()
+            for channel, nick, message in reminders
+            if nick == owner
+        )
+        if target and target != '*':
+            tpl = 'You have {count} reminders in {target}.'
+            nick_reminders = (
+                (timestamp, channel, nick, message)
+                for timestamp, channel, nick, message in nick_reminders
+                if channel == target
+            )
+
+        count = sum(1 for __ in nick_reminders)
+
+        if target == owner:
+            target = 'private'
+
+        bot.reply(tpl.format(count=count, target=target))
+
+    elif action == 'forget':
+        bot.rdb = {
+            timestamp: [
+                (channel, nick, message)
+                for channel, nick, message in reminders
+                if not (
+                    nick == owner
+                    and (target == '*' or target == channel)
+                )
+            ]
+            for timestamp, reminders in bot.rdb.items()
+        }
+        dump_database(bot.rfn, bot.rdb)
+
+        if not target or target == '*':
+            bot.reply('I forgot all your reminders.')
+        elif target == owner:
+            bot.reply('I forgot your private reminders.')
+        else:
+            bot.reply('I forgot your reminders in %s' % target)
+
+    else:
+        bot.reply(
+            'Unrecognized action. '
+            'Usage: {}reminders [count|forget [nickname|channel|*]]'
+            .format(bot.config.core.help_prefix))

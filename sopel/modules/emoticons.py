@@ -1,111 +1,122 @@
 # coding=utf-8
 """
-emoticons.py - Sopel Emoticons Module
+emoticons.py - Sopel Emoticons Plugin
 Copyright 2018, brasstax
 Licensed under the Eiffel Forum License 2
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
-from sopel.module import commands, example
+from sopel import plugin
 
 
-@commands('shrug')
-@example('.shrug', r'¯\_(ツ)_/¯')
+@plugin.command('shrug')
+@plugin.action_command('shrugs')
+@plugin.example('.shrug', r'¯\_(ツ)_/¯')
 def shrug(bot, trigger):
     bot.say('¯\\_(ツ)_/¯')
 
 
-@commands('happy')
-@example('.happy', 'ᕕ( ᐛ )ᕗ')
+@plugin.command('happy')
+@plugin.example('.happy', 'ᕕ( ᐛ )ᕗ')
 def happy(bot, trigger):
     bot.say('ᕕ( ᐛ )ᕗ')
 
 
-@commands('tableflip', 'tflip')
-@example('.tableflip', '(╯°□°）╯︵ ┻━┻')
-@example('.tflip', '(╯°□°）╯︵ ┻━┻')
+@plugin.command('smirk')
+@plugin.action_command('smirks')
+@plugin.example('.smirk', '(¬‿¬)')
+def smirk(bot, trigger):
+    bot.say('(¬‿¬)')
+
+
+@plugin.command('tableflip', 'tflip')
+@plugin.action_command('flips table', 'flips a table', 'flips the table')
+@plugin.example('.tableflip', '(╯°□°）╯︵ ┻━┻')
+@plugin.example('.tflip', '(╯°□°）╯︵ ┻━┻')
 def tableflip(bot, trigger):
     bot.say('(╯°□°）╯︵ ┻━┻')
 
 
-@commands('unflip')
-@example('.unflip', '┬┬ ﻿ノ( ゜-゜ノ)')
+@plugin.command('unflip')
+@plugin.action_command('unflips table', 'unflips the table')
+@plugin.example('.unflip', '┬┬ ﻿ノ( ゜-゜ノ)')
 def unflip(bot, trigger):
     bot.say('┬┬ ﻿ノ( ゜-゜ノ)')
 
 
-@commands('lenny')
-@example('.lenny', '( ͡° ͜ʖ ͡°)')
+@plugin.command('lenny')
+@plugin.example('.lenny', '( ͡° ͜ʖ ͡°)')
 def lenny(bot, trigger):
     bot.say('( ͡° ͜ʖ ͡°)')
 
 
-@commands('rage', 'anger')
-@example('.rage', 'щ(ಠ益ಠщ)')
-@example('.anger', 'щ(ಠ益ಠщ)')
+@plugin.command('rage', 'anger')
+@plugin.example('.rage', 'щ(ಠ益ಠщ)')
+@plugin.example('.anger', 'щ(ಠ益ಠщ)')
 def anger(bot, trigger):
     bot.say('щ(ಠ益ಠщ)')
 
 
-@commands('cry')
-@example('.cry', '( p′︵‵。)')
+@plugin.command('cry')
+@plugin.action_command('cries')
+@plugin.example('.cry', '( p′︵‵。)')
 def cry(bot, trigger):
     bot.say('( p′︵‵。)')
 
 
-@commands('love')
-@example('.love', '(●♡∀♡)')
+@plugin.command('love')
+@plugin.example('.love', '(●♡∀♡)')
 def love(bot, trigger):
     bot.say('(●♡∀♡)')
 
 
-@commands('success', 'winner')
-@example('.success', '٩( ᐛ )و')
-@example('.winner', '٩( ᐛ )و')
+@plugin.command('success', 'winner')
+@plugin.example('.success', '٩( ᐛ )و')
+@plugin.example('.winner', '٩( ᐛ )و')
 def success(bot, trigger):
     bot.say('٩( ᐛ )و')
 
 
-@commands('confused', 'wat')
-@example('.confused', '(●__●)???')
-@example('.wat', '(●__●)???')
+@plugin.command('confused', 'wat')
+@plugin.example('.confused', '(●__●)???')
+@plugin.example('.wat', '(●__●)???')
 def wat(bot, trigger):
     bot.say('(●__●)???')
 
 
-@commands('crazy')
-@example('.crazy', '⊙_ʘ')
+@plugin.command('crazy')
+@plugin.example('.crazy', '⊙_ʘ')
 def crazy(bot, trigger):
     bot.say('⊙_ʘ')
 
 
-@commands('hungry')
-@example('.hungry', 'ლ(´ڡ`ლ)')
+@plugin.command('hungry')
+@plugin.example('.hungry', 'ლ(´ڡ`ლ)')
 def hungry(bot, trigger):
     bot.say('ლ(´ڡ`ლ)')
 
 
-@commands('surprised')
-@example('.surprised', '(((( ;°Д°))))')
+@plugin.command('surprised')
+@plugin.example('.surprised', '(((( ;°Д°))))')
 def surprised(bot, trigger):
     bot.say('(((( ;°Д°))))')
 
 
-@commands('sick')
-@example('.sick', '(-﹏-。)')
+@plugin.command('sick')
+@plugin.example('.sick', '(-﹏-。)')
 def sick(bot, trigger):
     bot.say('(-﹏-。)')
 
 
-@commands('afraid')
-@example('.afraid', '(　〇□〇）')
+@plugin.command('afraid')
+@plugin.example('.afraid', '(　〇□〇）')
 def afraid(bot, trigger):
     bot.say('(　〇□〇）')
 
 
-@commands('worried')
-@example('.worried', '(　ﾟдﾟ)')
+@plugin.command('worried')
+@plugin.example('.worried', '(　ﾟдﾟ)')
 def worried(bot, trigger):
     bot.say('(　ﾟдﾟ)')

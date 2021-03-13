@@ -1,9 +1,9 @@
 # coding=utf-8
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import logging
-import os
 from logging.config import dictConfig
+import os
 
 from sopel import tools
 
@@ -21,7 +21,7 @@ class IrcLoggingHandler(logging.Handler):
     def __init__(self, bot, level):
         super(IrcLoggingHandler, self).__init__(level)
         self._bot = bot
-        self._channel = bot.config.core.logging_channel
+        self._channel = bot.settings.core.logging_channel
 
     def emit(self, record):
         """Emit a log ``record`` to the IRC channel.
@@ -29,6 +29,10 @@ class IrcLoggingHandler(logging.Handler):
         :param record: the log record to output
         :type record: :class:`logging.LogRecord`
         """
+        if self._bot.backend is None or not self._bot.backend.is_connected():
+            # Don't emit logs when the bot is not connected.
+            return
+
         try:
             msg = self.format(record)
             self._bot.say(msg, self._channel)
@@ -152,6 +156,12 @@ def setup_logging(settings):
     dictConfig(logging_config)
 
 
+@tools.deprecated(
+    reason='use sopel.tools.get_logger instead',
+    version='7.0',
+    warning_in='8.0',
+    removed_in='9.0',
+)
 def get_logger(name=None):
     """Return a logger for a module, if the name is given.
 

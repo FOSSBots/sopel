@@ -1,12 +1,13 @@
 # coding=utf-8
 """Triggers are how Sopel tells callables about their runtime context."""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
+import datetime
 import re
 import sys
-import datetime
 
-from sopel import tools
+from sopel import formatting, tools
+from sopel.tools import web
 
 
 __all__ = [
@@ -24,6 +25,7 @@ class PreTrigger(object):
 
     :param str own_nick: the bot's own IRC nickname
     :param str line: the full line from the server
+    :param tuple url_schemes: allowed schemes for URL detection
 
     At the :class:`PreTrigger` stage, the line has not been matched against any
     rules yet. This is what Sopel uses to perform matching.
@@ -80,6 +82,18 @@ class PreTrigger(object):
         For lines that do *not* contain ``:``, :attr:`text` will be the last
         argument in :attr:`args` instead.
 
+    .. py:attribute:: urls
+        :type: tuple
+
+        List of URLs found in the :attr:`text`.
+
+        This is for ``PRIVMSG`` and ``NOTICE`` messages only. For other
+        messages, this will be an empty ``tuple``.
+
+    .. py:attribute:: plain
+
+        The last argument of the IRC command with control codes stripped.
+
     .. py:attribute:: time
 
         The time when the message was received.
@@ -95,9 +109,11 @@ class PreTrigger(object):
     component_regex = re.compile(r'([^!]*)!?([^@]*)@?(.*)')
     intent_regex = re.compile('\x01(\\S+) ?(.*)\x01')
 
-    def __init__(self, own_nick, line):
+    def __init__(self, own_nick, line, url_schemes=None):
         line = line.strip('\r\n')
         self.line = line
+        self.urls = tuple()
+        self.plain = ''
 
         # Break off IRCv3 message tags, if present
         self.tags = {}
@@ -170,10 +186,18 @@ class PreTrigger(object):
                 self.tags['intent'] = intent
                 self.args[-1] = message or ''
 
+            # Search URLs after CTCP parsing
+            self.urls = tuple(
+                web.search_urls(self.args[-1], schemes=url_schemes))
+
         # Populate account from extended-join messages
         if self.event == 'JOIN' and len(self.args) == 3:
             # Account is the second arg `...JOIN #Sopel account :realname`
             self.tags['account'] = self.args[1]
+
+        # get plain text message
+        if self.args:
+            self.plain = formatting.plain(self.args[-1])
 
 
 class Trigger(unicode):
@@ -212,11 +236,11 @@ class Trigger(unicode):
     time = property(lambda self: self._pretrigger.time)
     """When the message was received.
 
-    :type: :class:`~datetime.datetime` object
+    :type: naïve :class:`~datetime.datetime` object (no timezone)
 
     If the IRC server supports ``server-time``, :attr:`time` will give that
     value. Otherwise, :attr:`time` will use the time when the message was
-    received by Sopel.
+    received by Sopel. In both cases, this time is in UTC.
     """
     raw = property(lambda self: self._pretrigger.line)
     """The entire raw IRC message, as sent from the server.
@@ -260,7 +284,23 @@ class Trigger(unicode):
 
     Most plugin :func:`callables <callable>` primarily need to deal with
     ``PRIVMSG``. Other event types like ``NOTICE``, ``NICK``, ``TOPIC``,
-    ``KICK``, etc. must be requested using :func:`.module.event`.
+    ``KICK``, etc. must be requested using :func:`.plugin.event`.
+    """
+    ctcp = property(lambda self: self.tags.get('intent', None))
+    """The CTCP command (if any).
+
+    :type: str
+
+    Common CTCP commands are ``ACTION``, ``VERSION``, and ``TIME``. Other
+    commands include ``USERINFO``, ``PING``, and various ``DCC`` operations.
+
+    .. versionadded:: 7.1
+
+    .. important::
+
+        Use this attribute instead of the ``intent`` tag in :attr:`tags`.
+        Message intents never made it past the IRCv3 draft stage, and Sopel will
+        drop support for them in a future release.
     """
     match = property(lambda self: self._match)
     """The :ref:`Match object <match-objects>` for the triggering line.
@@ -273,7 +313,7 @@ class Trigger(unicode):
     :type: :term:`method`
     :rtype: str
 
-    Any regular-expression :func:`rules <.module.rule>` attached to the
+    Any regular-expression :func:`rules <.plugin.rule>` attached to the
     triggered :func:`callable` may define numbered or named groups that can be
     retrieved through this property.
 
@@ -283,8 +323,8 @@ class Trigger(unicode):
     .. seealso::
 
        For more information on predefined numbered match groups in commands,
-       see :func:`.module.commands`, :func:`.module.action_commands`, and
-       :func:`.module.nickname_commands`.
+       see :func:`.plugin.command`, :func:`.plugin.action_command`, and
+       :func:`.plugin.nickname_command`.
 
        Also see Python's :meth:`re.Match.group` documentation for details
        about this method's behavior.
@@ -314,6 +354,21 @@ class Trigger(unicode):
     These are the strings passed between the event name and the colon. For
     example, when setting ``mode -m`` on the channel ``#example``, args would
     be ``('#example', '-m')``
+    """
+    urls = property(lambda self: self._pretrigger.urls)
+    """A tuple containing all URLs found in the text.
+
+    :type: tuple
+
+    URLs are listed only for ``PRIVMSG`` or a ``NOTICE``, otherwise this is
+    an empty tuple.
+    """
+    plain = property(lambda self: self._pretrigger.plain)
+    """The text without formatting control codes.
+
+    :type: str
+
+    This is the text of the trigger object without formatting control codes.
     """
     tags = property(lambda self: self._pretrigger.tags)
     """A map of the IRCv3 message tags on the message.

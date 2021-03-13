@@ -1,5 +1,5 @@
 # coding=utf-8
-"""Useful miscellaneous tools and shortcuts for Sopel modules
+"""Useful miscellaneous tools and shortcuts for Sopel plugins
 
 *Availability: 3+*
 """
@@ -12,9 +12,10 @@
 
 # https://sopel.chat
 
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import codecs
+from collections import defaultdict
 import functools
 import logging
 import os
@@ -22,9 +23,13 @@ import re
 import sys
 import threading
 import traceback
-from collections import defaultdict
 
-from sopel.tools._events import events  # NOQA
+from pkg_resources import parse_version
+
+from sopel import __version__
+
+from ._events import events  # NOQA
+from . import time, web  # NOQA
 
 if sys.version_info.major >= 3:
     raw_input = input
@@ -43,216 +48,13 @@ _channel_prefixes = ('#', '&', '+', '!')
 _regex_type = type(re.compile(''))
 
 
-def get_input(prompt):
-    """Get decoded input from the terminal (equivalent to Python 3's ``input``).
-
-    :param str prompt: what to display as a prompt on the terminal
-    :return: the user's input
-    :rtype: str
-    """
-    if sys.version_info.major >= 3:
-        return input(prompt)
-    else:
-        return raw_input(prompt).decode('utf8')
-
-
-def compile_rule(nick, pattern, alias_nicks):
-    """Compile a rule regex and fill in nickname placeholders.
-
-    :param str nick: the nickname to use when replacing ``$nick`` and
-                     ``$nickname`` placeholders in the ``pattern``
-    :param str pattern: the rule regex pattern
-    :param list alias_nicks: a list of alternatives that should also be accepted
-                             instead of ``nick``
-    :return: the compiled regex ``pattern``, with placeholders for ``$nick`` and
-             ``$nickname`` filled in
-    :rtype: :ref:`re.Pattern <python:re-objects>`
-
-    Will not recompile an already compiled pattern.
-    """
-    # Not sure why this happens on reloads, but it shouldn't cause problems…
-    if isinstance(pattern, _regex_type):
-        return pattern
-
-    if alias_nicks:
-        nicks = list(alias_nicks)  # alias_nicks.copy() doesn't work in py2
-        nicks.append(nick)
-        nicks = map(re.escape, nicks)
-        nick = '(?:%s)' % '|'.join(nicks)
-    else:
-        nick = re.escape(nick)
-
-    pattern = pattern.replace('$nickname', nick)
-    pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))
-    flags = re.IGNORECASE
-    if '\n' in pattern:
-        flags |= re.VERBOSE
-    return re.compile(pattern, flags)
-
-
-def get_command_regexp(prefix, command):
-    """Get a compiled regexp object that implements the command.
-
-    :param str prefix: the command prefix (interpreted as regex)
-    :param str command: the name of the command
-    :return: a compiled regexp object that implements the command
-    :rtype: :ref:`re.Pattern <python:re-objects>`
-    """
-    # Escape all whitespace with a single backslash. This ensures that regexp
-    # in the prefix is treated as it was before the actual regexp was changed
-    # to use the verbose syntax.
-    prefix = re.sub(r"(\s)", r"\\\1", prefix)
-
-    pattern = get_command_pattern(prefix, command)
-    return re.compile(pattern, re.IGNORECASE | re.VERBOSE)
-
-
-def get_command_pattern(prefix, command):
-    """Get the uncompiled regex pattern for standard commands.
-
-    :param str prefix: the command prefix (interpreted as regex)
-    :param str command: the command name
-    :return: a regex pattern that will match the given command
-    :rtype: str
-    """
-    # This regexp matches equivalently and produces the same
-    # groups 1 and 2 as the old regexp: r'^%s(%s)(?: +(.*))?$'
-    # The only differences should be handling all whitespace
-    # like spaces and the addition of groups 3-6.
-    return r"""
-        (?:{prefix})({command}) # Command as group 1.
-        (?:\s+              # Whitespace to end command.
-        (                   # Rest of the line as group 2.
-        (?:(\S+))?          # Parameters 1-4 as groups 3-6.
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        .*                  # Accept anything after the parameters.
-                            # Leave it up to the module to parse
-                            # the line.
-        ))?                 # Group 2 must be None, if there are no
-                            # parameters.
-        $                   # EoL, so there are no partial matches.
-        """.format(prefix=prefix, command=command)
-
-
-def get_nickname_command_regexp(nick, command, alias_nicks):
-    """Get a compiled regexp object that implements the nickname command.
-
-    :param str nick: the bot's nickname
-    :param str command: the command name
-    :param list alias_nicks: a list of alternatives that should also be accepted
-                             instead of ``nick``
-    :return: a compiled regex pattern that implements the given nickname command
-    :rtype: :ref:`re.Pattern <python:re-objects>`
-    """
-    if isinstance(alias_nicks, unicode):
-        alias_nicks = [alias_nicks]
-    elif not isinstance(alias_nicks, list):
-        raise ValueError('A list or string is required.')
-
-    return compile_rule(nick, get_nickname_command_pattern(command), alias_nicks)
-
-
-def get_nickname_command_pattern(command):
-    """Get the uncompiled regex pattern for a nickname command.
-
-    :param str command: the command name
-    :return: a regex pattern that will match the given nickname command
-    :rtype: str
-    """
-    return r"""
-        ^
-        $nickname[:,]? # Nickname.
-        \s+({command}) # Command as group 1.
-        (?:\s+         # Whitespace to end command.
-        (              # Rest of the line as group 2.
-        (?:(\S+))?     # Parameters 1-4 as groups 3-6.
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        .*             # Accept anything after the parameters. Leave it up to
-                       # the module to parse the line.
-        ))?            # Group 1 must be None, if there are no parameters.
-        $              # EoL, so there are no partial matches.
-        """.format(command=command)
-
-
-def get_action_command_regexp(command):
-    """Get a compiled regexp object that implements the command.
-
-    :param str command: the name of the command
-    :return: a compiled regexp object that implements the command
-    :rtype: :ref:`re.Pattern <python:re-objects>`
-    """
-    pattern = get_action_command_pattern(command)
-    return re.compile(pattern, re.IGNORECASE | re.VERBOSE)
-
-
-def get_action_command_pattern(command):
-    """Get the uncompiled regex pattern for action commands.
-
-    :param str command: the command name
-    :return: a regex pattern that will match the given command
-    :rtype: str
-    """
-    # This regexp matches equivalently and produces the same
-    # groups 1 and 2 as the old regexp: r'^%s(%s)(?: +(.*))?$'
-    # The only differences should be handling all whitespace
-    # like spaces and the addition of groups 3-6.
-    return r"""
-        ({command}) # Command as group 1.
-        (?:\s+              # Whitespace to end command.
-        (                   # Rest of the line as group 2.
-        (?:(\S+))?          # Parameters 1-4 as groups 3-6.
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        (?:\s+(\S+))?
-        .*                  # Accept anything after the parameters.
-                            # Leave it up to the module to parse
-                            # the line.
-        ))?                 # Group 2 must be None, if there are no
-                            # parameters.
-        $                   # EoL, so there are no partial matches.
-        """.format(command=command)
-
-
-def get_sendable_message(text, max_length=400):
-    """Get a sendable ``text`` message, with its excess when needed.
-
-    :param str txt: text to send (expects Unicode-encoded string)
-    :param int max_length: maximum length of the message to be sendable
-    :return: a tuple of two values, the sendable text and its excess text
-    :rtype: (str, str)
-
-    We're arbitrarily saying that the max is 400 bytes of text when
-    messages will be split. Otherwise, we'd have to account for the bot's
-    hostmask, which is hard.
-
-    The ``max_length`` is the max length of text in **bytes**, but we take
-    care of Unicode 2-byte characters by working on the Unicode string,
-    then making sure the bytes version is smaller than the max length.
-    """
-    unicode_max_length = max_length
-    excess = ''
-
-    while len(text.encode('utf-8')) > max_length:
-        last_space = text.rfind(' ', 0, unicode_max_length)
-        if last_space == -1:
-            # No last space, just split where it is possible
-            excess = text[unicode_max_length:] + excess
-            text = text[:unicode_max_length]
-            # Decrease max length for the unicode string
-            unicode_max_length = unicode_max_length - 1
-        else:
-            # Split at the last best space found
-            excess = text[last_space:]
-            text = text[:last_space]
-
-    return text, excess.lstrip()
-
-
-def deprecated(reason=None, version=None, removed_in=None, func=None):
+def deprecated(
+    reason=None,
+    version=None,
+    removed_in=None,
+    warning_in=None,
+    func=None,
+):
     """Decorator to mark deprecated functions in Sopel's API
 
     :param str reason: optional text added to the deprecation warning
@@ -260,15 +62,19 @@ def deprecated(reason=None, version=None, removed_in=None, func=None):
                         is deprecated
     :param str removed_in: optional version number when the deprecated function
                            will be removed
+    :param str warning_in: optional version number when the decorated function
+                           should start emitting a warning when called
     :param callable func: deprecated function
     :return: a callable that depends on how the decorator is called; either
              the decorated function, or a decorator with the appropriate
              parameters
 
     Any time the decorated ``func`` is called, a deprecation warning will be
-    printed to ``sys.stderr``, with the last frame of the traceback.
+    printed to ``sys.stderr``, with the last frame of the traceback. The
+    optional ``warning_in`` argument suppresses the warning on Sopel versions
+    older than that, allowing for multi-stage deprecation timelines.
 
-    It can be used with or without arguments::
+    The decorator can be used with or without arguments::
 
         from sopel import tools
 
@@ -306,8 +112,11 @@ def deprecated(reason=None, version=None, removed_in=None, func=None):
 
     .. versionadded:: 7.0
         Parameters ``reason``, ``version``, and ``removed_in``.
+
+    .. versionadded:: 7.1
+        The ``warning_in`` parameter.
     """
-    if not any([reason, version, removed_in, func]):
+    if not any([reason, version, removed_in, warning_in, func]):
         # common usage: @deprecated()
         return deprecated
 
@@ -318,7 +127,7 @@ def deprecated(reason=None, version=None, removed_in=None, func=None):
     if func is None:
         # common usage: @deprecated(message, version, removed_in)
         def decorator(func):
-            return deprecated(reason, version, removed_in, func)
+            return deprecated(reason, version, removed_in, warning_in, func)
         return decorator
 
     # now, we have everything we need to have:
@@ -345,13 +154,233 @@ def deprecated(reason=None, version=None, removed_in=None, func=None):
 
     @functools.wraps(func)
     def deprecated_func(*args, **kwargs):
-        stderr(text)
-        # Only display the last frame
-        trace = traceback.extract_stack()
-        stderr(traceback.format_list(trace[:-1])[-1][:-1])
+        if not (warning_in and
+                parse_version(warning_in) >= parse_version(__version__)):
+            stderr(text)
+            # Only display the last frame
+            trace = traceback.extract_stack()
+            stderr(traceback.format_list(trace[:-1])[-1][:-1])
         return func(*args, **kwargs)
 
     return deprecated_func
+
+
+@deprecated('Shim for Python 2 cross-compatibility, no longer needed. '
+            'Use built-in `input()` instead.',
+            version='7.1',
+            warning_in='8.0',
+            removed_in='8.1')
+def get_input(prompt):
+    """Get decoded input from the terminal (equivalent to Python 3's ``input``).
+
+    :param str prompt: what to display as a prompt on the terminal
+    :return: the user's input
+    :rtype: str
+
+    .. deprecated:: 7.1
+
+        Use of this function will become a warning when Python 2 support is
+        dropped in Sopel 8.0. The function will be removed in Sopel 8.1.
+
+    """
+    if sys.version_info.major >= 3:
+        return input(prompt)
+    else:
+        return raw_input(prompt).decode('utf8')
+
+
+@deprecated('rule compilation tools are now private', '7.1', '8.0')
+def compile_rule(nick, pattern, alias_nicks):
+    """Compile a rule regex and fill in nickname placeholders.
+
+    :param str nick: the nickname to use when replacing ``$nick`` and
+                     ``$nickname`` placeholders in the ``pattern``
+    :param str pattern: the rule regex pattern
+    :param list alias_nicks: a list of alternatives that should also be accepted
+                             instead of ``nick``
+    :return: the compiled regex ``pattern``, with placeholders for ``$nick`` and
+             ``$nickname`` filled in
+    :rtype: :ref:`re.Pattern <python:re-objects>`
+
+    Will not recompile an already compiled pattern.
+
+    .. deprecated:: 7.1
+
+        Rule regexp tools are now part of the internal machinery. This function
+        is deprecated and will be removed in Sopel 8.
+
+    """
+    # Not sure why this happens on reloads, but it shouldn't cause problems…
+    if isinstance(pattern, _regex_type):
+        return pattern
+
+    from sopel.plugins.rules import _compile_pattern
+    return _compile_pattern(pattern, nick, aliases=alias_nicks)
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_command_regexp(prefix, command):
+    """Get a compiled regexp object that implements the command.
+
+    :param str prefix: the command prefix (interpreted as regex)
+    :param str command: the name of the command
+    :return: a compiled regexp object that implements the command
+    :rtype: :ref:`re.Pattern <python:re-objects>`
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import Command
+    rule = Command(name=command, prefix=prefix)
+    return rule.get_rule_regex()
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_command_pattern(prefix, command):
+    """Get the uncompiled regex pattern for standard commands.
+
+    :param str prefix: the command prefix (interpreted as regex)
+    :param str command: the command name
+    :return: a regex pattern that will match the given command
+    :rtype: str
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import Command
+    return Command.PATTERN_TEMPLATE.format(prefix=prefix, command=command)
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_nickname_command_regexp(nick, command, alias_nicks):
+    """Get a compiled regexp object that implements the nickname command.
+
+    :param str nick: the bot's nickname
+    :param str command: the command name
+    :param list alias_nicks: a list of alternatives that should also be accepted
+                             instead of ``nick``
+    :return: a compiled regex pattern that implements the given nickname command
+    :rtype: :ref:`re.Pattern <python:re-objects>`
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import NickCommand
+
+    if isinstance(alias_nicks, unicode):
+        alias_nicks = [alias_nicks]
+    elif not isinstance(alias_nicks, (list, tuple)):
+        raise ValueError('A list or string is required.')
+
+    rule = NickCommand(nick=nick, name=command, nick_aliases=alias_nicks)
+    return rule.get_rule_regex()
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_nickname_command_pattern(command):
+    """Get the uncompiled regex pattern for a nickname command.
+
+    :param str command: the command name
+    :return: a regex pattern that will match the given nickname command
+    :rtype: str
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import NickCommand
+    return NickCommand.PATTERN_TEMPLATE.format(command=command)
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_action_command_regexp(command):
+    """Get a compiled regexp object that implements the command.
+
+    :param str command: the name of the command
+    :return: a compiled regexp object that implements the command
+    :rtype: :ref:`re.Pattern <python:re-objects>`
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import ActionCommand
+    rule = ActionCommand(name=command)
+    return rule.get_rule_regex()
+
+
+@deprecated('command regexp tools are now private', '7.1', '8.0')
+def get_action_command_pattern(command):
+    """Get the uncompiled regex pattern for action commands.
+
+    :param str command: the command name
+    :return: a regex pattern that will match the given command
+    :rtype: str
+
+    .. deprecated:: 7.1
+
+        Command regexp tools are now part of the internal machinery. This
+        function is deprecated and will be removed in Sopel 8.
+
+    """
+    # Must defer import to avoid cyclic dependency
+    from sopel.plugins.rules import ActionCommand
+    return ActionCommand.PATTERN_TEMPLATE.format(command=command)
+
+
+def get_sendable_message(text, max_length=400):
+    """Get a sendable ``text`` message, with its excess when needed.
+
+    :param str txt: text to send (expects Unicode-encoded string)
+    :param int max_length: maximum length of the message to be sendable
+    :return: a tuple of two values, the sendable text and its excess text
+    :rtype: (str, str)
+
+    We're arbitrarily saying that the max is 400 bytes of text when
+    messages will be split. Otherwise, we'd have to account for the bot's
+    hostmask, which is hard.
+
+    The ``max_length`` is the max length of text in **bytes**, but we take
+    care of Unicode 2-byte characters by working on the Unicode string,
+    then making sure the bytes version is smaller than the max length.
+
+    .. versionadded:: 6.6.2
+    """
+    unicode_max_length = max_length
+    excess = ''
+
+    while len(text.encode('utf-8')) > max_length:
+        last_space = text.rfind(' ', 0, unicode_max_length)
+        if last_space == -1:
+            # No last space, just split where it is possible
+            excess = text[unicode_max_length:] + excess
+            text = text[:unicode_max_length]
+            # Decrease max length for the unicode string
+            unicode_max_length = unicode_max_length - 1
+        else:
+            # Split at the last best space found
+            excess = text[last_space:]
+            text = text[:last_space]
+
+    return text, excess.lstrip()
 
 
 # This class was useful before Python 2.5, when ``defaultdict`` was added
@@ -602,8 +631,8 @@ def get_logger(plugin_name):
 
     This::
 
-        from sopel import plugins
-        LOGGER = plugins.get_logger('my_custom_plugin')
+        from sopel import tools
+        LOGGER = tools.get_logger('my_custom_plugin')
 
     is equivalent to this::
 
@@ -722,6 +751,46 @@ class SopelMemoryWithDefault(defaultdict):
         return self.__contains__(key)
 
 
+class SopelIdentifierMemory(SopelMemory):
+    """Special Sopel memory that stores ``Identifier`` as key.
+
+    This is a convenient subclass of :class:`SopelMemory` that always casts its
+    keys as instances of :class:`Identifier`::
+
+        >>> from sopel import tools
+        >>> memory = tools.SopelIdentifierMemory()
+        >>> memory['Exirel'] = 'king'
+        >>> list(memory.items())
+        [(Identifier('Exirel'), 'king')]
+        >>> tools.Identifier('exirel') in memory
+        True
+        >>> 'exirel' in memory
+        True
+
+    As seen in the example above, it is possible to perform various operations
+    with both ``Identifier`` and :class:`str` objects, taking advantage of the
+    case-insensitive behavior of ``Identifier``.
+
+    .. note::
+
+        Internally, it will try to do ``key = tools.Identifier(key)``, which
+        will raise an exception if it cannot instantiate the key properly::
+
+            >>> memory[1] = 'error'
+            AttributeError: 'int' object has no attribute 'lower'
+
+    .. versionadded:: 7.1
+    """
+    def __getitem__(self, key):
+        return super(SopelIdentifierMemory, self).__getitem__(Identifier(key))
+
+    def __contains__(self, key):
+        return super(SopelIdentifierMemory, self).__contains__(Identifier(key))
+
+    def __setitem__(self, key, value):
+        super(SopelIdentifierMemory, self).__setitem__(Identifier(key), value)
+
+
 @deprecated(version='7.0', removed_in='8.0')
 def get_raising_file_and_line(tb=None):
     """Get the file and line number where an exception happened.
@@ -742,3 +811,30 @@ def get_raising_file_and_line(tb=None):
     filename, lineno, _context, _line = traceback.extract_tb(tb)[-1]
 
     return filename, lineno
+
+
+def chain_loaders(*lazy_loaders):
+    """Chain lazy loaders into one.
+
+    :param lazy_loaders: one or more lazy loader functions
+    :type lazy_loaders: :term:`function`
+    :return: a lazy loader that combines all of the given ones
+    :rtype: :term:`function`
+
+    This function takes any number of lazy loaders as arguments and merges them
+    together into one. It's primarily a helper for lazy rule decorators such as
+    :func:`sopel.plugin.url_lazy`.
+
+    .. important::
+
+        This function doesn't check the uniqueness of regexes generated by
+        all the loaders.
+
+    """
+    def chained_loader(settings):
+        return [
+            regex
+            for lazy_loader in lazy_loaders
+            for regex in lazy_loader(settings)
+        ]
+    return chained_loader

@@ -30,12 +30,51 @@ This file can be generated with ``sopel configure``.
 
 .. seealso::
 
-    The :doc:`cli` chapter for ``sopel``'s subcommands.
-
+    The :doc:`cli` chapter for ``sopel configure`` subcommand.
 
 .. contents::
     :local:
     :depth: 2
+
+
+INI file structure
+==================
+
+Sopel uses an INI file structure, and uses `Python's ConfigParser`__ for that
+purpose. Note that the exact behavior of the parser depends on the version of
+Python you are running your instance of Sopel with (indentation and comments
+in particular are handled differently between Python 2.7 and Python 3+).
+
+On top of that, Sopel uses its own configuration class to handle certain types
+of options, such as choice, integer, float, list, and boolean.
+
+In this document, when a config option is a "list", it means you can provide
+more than one value, each on its own line, like this::
+
+    [core]
+    single_option = only one value
+    multi_option =
+        first value
+        second value
+        "# escape value starting with # using double quotes"
+        # this is a comment and won't be used as value
+        yet another value
+
+When a config option is a boolean, it means you can provide one of these
+case-insensitive values as "true": ``1``, ``yes``, ``y``, ``true``, ``on``. Any
+other value will be considered as "false".
+
+When a config option is a choice, it means you can provide only one of the
+values defined as valid for this option, or Sopel will complain about it.
+
+.. note::
+
+   The INI file structure Sopel uses does **not** require quoting of values,
+   except for specific cases such as the escaped list value shown above.
+   Quoting a value unnecessarily can lead to unexpected behavior such as an
+   absolute pathname being interpreted as relative to Sopel's home directory.
+
+.. __: https://docs.python.org/3/library/configparser.html#supported-ini-file-structure
 
 
 Identity & Admins
@@ -101,6 +140,22 @@ The same instance can have multiple admins. Similarly, it can be configured
 by :attr:`~CoreSection.admin_accounts` or by :attr:`~CoreSection.admins`. If
 ``admin_accounts`` is set, ``admins`` will be ignored.
 
+Example owner & admin configurations::
+
+    # Using nickname matching
+    [core]
+    owner = dgw
+    admins =
+            Exirel
+            HumorBaby
+
+    # Using account matching
+    [core]
+    owner_account = dgw
+    admin_accounts =
+            Exirel
+            HumorBaby
+
 Both ``owner_account`` and ``admin_accounts`` are safer to use than
 nick-based matching, but the IRC server must support accounts.
 (Most, sadly, do not as of late 2019.)
@@ -142,7 +197,7 @@ you need to set :attr:`~CoreSection.use_ssl` to true::
     [core]
     use_ssl = yes
     verify_ssl = yes
-    ca_certs = path/to/sopel/ca_certs.pem
+    ca_certs = /path/to/sopel/ca_certs.pem
 
 In that case:
 
@@ -205,14 +260,25 @@ Flood Prevention
 ----------------
 
 In order to avoid flooding the server, Sopel has a built-in flood prevention
-mechanism. It can be controlled with several directives:
+mechanism. The flood burst limit can be controlled with these directives:
 
 * :attr:`~CoreSection.flood_burst_lines`: the number of messages
   that can be sent before triggering the throttle mechanism.
-* :attr:`~CoreSection.flood_empty_wait`: time to wait once burst limit has been
-  reached before sending a new message.
 * :attr:`~CoreSection.flood_refill_rate`: how much time (in seconds) must be
   spent before recovering flood limit.
+
+The wait time when the flood limit is reached can be controlled with these:
+
+* :attr:`~CoreSection.flood_empty_wait`: time to wait once burst limit has been
+  reached before sending a new message.
+* :attr:`~CoreSection.flood_max_wait`: absolute maximum time to wait before
+  sending a new message once the burst limit has been reached.
+
+And the extra wait penalty for longer messages can be controlled with these:
+
+* :attr:`~CoreSection.flood_text_length`: maximum size of messages before they
+  start getting an extra wait penalty.
+* :attr:`~CoreSection.flood_penalty_ratio`: ratio used to compute said penalty.
 
 For example this configuration::
 
@@ -225,15 +291,50 @@ will allow 10 messages at once before triggering the throttle mechanism, then
 it'll wait 0.5s before sending a new message, and refill the burst limit every
 2 seconds.
 
+The wait time **cannot be longer** than :attr:`~CoreSection.flood_max_wait` (2s
+by default). This maximum wait time includes any potential extra penalty for
+longer messages.
+
+Messages that are longer than :attr:`~CoreSection.flood_text_length` get an
+extra wait penalty. The penalty is computed using a penalty ratio (controlled
+by :attr:`~CoreSection.flood_penalty_ratio`, which is 1.4 by default)::
+
+    length_overflow = max(0, (len(text) - flood_text_length))
+    extra_penalty = length_overflow / (flood_text_length * flood_penalty_ratio)
+
+For example with a message of 80 characters, the added extra penalty will be::
+
+    length_overflow = max(0, 80 - 50)  # == 30
+    extra_penalty = 30 / (50 * 1.4)  # == 0.428s (approximately)
+
+With the default configuration, it means a minimum wait time of 0.928s before
+sending any new message (0.5s + 0.428s).
+
+You can **deactivate** this extra wait penalty by setting
+:attr:`~CoreSection.flood_penalty_ratio` to 0.
+
 The default configuration works fine with most tested networks, but individual
 bots' owners are invited to tweak as necessary to respect their network's flood
 policy.
 
 .. versionadded:: 7.0
 
-   Flood prevention has been modified in Sopel 7.0 and these configuration
-   options have been added: ``flood_burst_lines``, ``flood_empty_wait``, and
-   ``flood_refill_rate``.
+    Additional configuration options: ``flood_burst_lines``, ``flood_empty_wait``,
+    and ``flood_refill_rate``.
+
+.. versionadded:: 7.1
+
+    Even more additional configuration options: ``flood_max_wait``,
+    ``flood_text_length``, and ``flood_penalty_ratio``.
+
+    It is now possible to deactivate the extra penalty for longer messages by
+    setting ``flood_penalty_ratio`` to 0.
+
+.. note::
+
+    ``@dgw`` said once about Sopel's flood protection logic:
+
+        *"It's some arcane magic from AT LEAST a decade ago."*
 
 Perform commands on connect
 ---------------------------
@@ -305,21 +406,36 @@ and the required credentials:
   * ``userserv``: the service's nickame to send credentials to
     (``UserServ`` by default)
 
+Example of nick-based authentication with NickServ service::
+
+    [core]
+    auth_method = nickserv         # select nick-based auth
+    # auth_username is not required for nickserv
+    auth_password = SopelIsGreat!  # your bot's password
+    auth_target = NickServ         # default value
+
+And here is an example of server-based authentication using SASL::
+
+    [core]
+    auth_method = sasl             # select server-based auth
+    auth_username = BotAccount     # your bot's username
+    auth_password = SopelIsGreat!  # your bot's password
+    auth_target = PLAIN            # default sasl mechanism
+
+
 Multi-stage
--------------
+-----------
 
 In some cases, an IRC bot needs to use both server-based and
 nick-based authentication.
 
 * :attr:`~CoreSection.server_auth_method`: defines the server-based
-  authentication method to use (``sasl`` or ``server``)
+  authentication method to use (``sasl`` or ``server``); it will
+  be used only if :attr:`~CoreSection.auth_method` does not define a
+  server-based authentication method
 * :attr:`~CoreSection.nick_auth_method`: defines the nick-based authentication
-  method to use ( ``nickserv``, ``authserv``, ``Q``, or ``userserv``)
-
-.. important::
-
-   If ``auth_method`` is defined then ``nick_auth_method`` (and its options)
-   will be ignored.
+  method to use ( ``nickserv``, ``authserv``, ``Q``, or ``userserv``); it will
+  be used only if :attr:`~CoreSection.auth_method` is not set
 
 .. versionadded:: 7.0
 
@@ -329,13 +445,33 @@ nick-based authentication.
 Server-based
 ............
 
-When :attr:`~CoreSection.server_auth_method` is defined, the settings
-used are:
+When :attr:`~CoreSection.server_auth_method` is defined the settings used are:
 
 * :attr:`~CoreSection.server_auth_username`: account's username
 * :attr:`~CoreSection.server_auth_password`: account's password
 * :attr:`~CoreSection.server_auth_sasl_mech`: the SASL mechanism to use
   (defaults to ``PLAIN``)
+
+For example, this will use NickServ ``IDENTIFY`` command and SASL mechanism::
+
+    [core]
+    # nick-based auth
+    auth_method = nickserv         # select nick-based auth
+    # auth_username is not required for nickserv
+    auth_password = SopelIsGreat!  # your bot's password
+    auth_target = NickServ         # default value
+
+    # server-based auth
+    server_auth_method = sasl             # select server-based auth
+    server_auth_username = BotAccount     # your bot's username
+    server_auth_password = SopelIsGreat!  # your bot's password
+    server_auth_target = PLAIN            # default sasl mechanism
+
+.. important::
+
+    If :attr:`~CoreSection.auth_method` is already set to ``sasl`` or
+    ``server`` then :attr:`~CoreSection.server_auth_method` (and its options)
+    will be ignored.
 
 Nick-based
 ..........
@@ -349,6 +485,26 @@ used are:
 * :attr:`~CoreSection.nick_auth_target`: the target used to send authentication
   credentials; may be optional for some authentication methods; defaults to
   ``NickServ`` for ``nickserv``, and to ``UserServ`` for ``userserv``.
+
+For example, this will use NickServ ``IDENTIFY`` command and SASL mechanism::
+
+    [core]
+    # nick-based auth
+    nick_auth_method = nickserv         # select nick-based auth
+    # nick_auth_username is not required for nickserv
+    nick_auth_password = SopelIsGreat!  # your bot's password
+    nick_auth_target = NickServ         # default value
+
+    # server-based auth
+    server_auth_method = sasl             # select server-based auth
+    server_auth_username = BotAccount     # your bot's username
+    server_auth_password = SopelIsGreat!  # your bot's password
+    server_auth_target = PLAIN            # default sasl mechanism
+
+.. important::
+
+    If :attr:`~CoreSection.auth_method` is already set then
+    :attr:`~CoreSection.nick_auth_method` (and its options) will be ignored.
 
 
 Database
@@ -494,6 +650,7 @@ Example of configuration for logging::
     logging_level = INFO
     logging_format = [%(asctime)s] %(levelname)s - %(message)s
     logging_datefmt = %Y-%m-%d %H:%M:%S
+    logdir = /path/to/logs
 
 .. versionadded:: 7.0
 
@@ -537,7 +694,10 @@ Raw Logs
 --------
 
 It is possible to store raw logs of what Sopel receives and sends by setting
-the flag :attr:`~CoreSection.log_raw` to true.
+the flag :attr:`~CoreSection.log_raw` to true::
+
+    [core]
+    log_raw = on
 
 In that case, IRC messages received and sent are stored into a file named
 ``<base>.raw.log``, located in the log directory.

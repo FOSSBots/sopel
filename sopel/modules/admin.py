@@ -1,6 +1,6 @@
 # coding=utf-8
 """
-admin.py - Sopel Admin Module
+admin.py - Sopel Admin Plugin
 Copyright 2010-2011, Sean B. Palmer (inamidst.com) and Michael Yanovich
 (yanovich.net)
 Copyright © 2012, Elad Alfassa, <elad@fedoraproject.org>
@@ -10,19 +10,28 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
-from sopel.config.types import (
-    StaticSection, ValidatedAttribute, FilenameAttribute
-)
-import sopel.module
+import logging
+
+from sopel import plugin
+from sopel.config import types
+
+LOGGER = logging.getLogger(__name__)
+
+ERROR_JOIN_NO_CHANNEL = 'Which channel should I join?'
+"""Error message when channel is missing from command arguments."""
+ERROR_PART_NO_CHANNEL = 'Which channel should I quit?'
+"""Error message when channel is missing from command arguments."""
+ERROR_NOTHING_TO_SAY = 'I need a channel and a message to talk.'
+"""Error message when channel and/or message are missing."""
 
 
-class AdminSection(StaticSection):
-    hold_ground = ValidatedAttribute('hold_ground', bool, default=False)
+class AdminSection(types.StaticSection):
+    hold_ground = types.ValidatedAttribute('hold_ground', bool, default=False)
     """Auto re-join on kick"""
-    auto_accept_invite = ValidatedAttribute('auto_accept_invite', bool,
-                                            default=True)
+    auto_accept_invite = types.ValidatedAttribute('auto_accept_invite', bool,
+                                                  default=True)
     """Auto-join channels when invited"""
 
 
@@ -89,6 +98,7 @@ def _join(bot, channel, key=None, save=True):
         if channel not in channels or channels[channel] != key:
             channels[channel] = key
             _set_config_channels(bot, channels)
+            LOGGER.info('Added "%s" to core.channels.', channel)
 
 
 def _part(bot, channel, msg=None, save=True):
@@ -99,26 +109,31 @@ def _part(bot, channel, msg=None, save=True):
         if channel in channels:
             del channels[channel]
             _set_config_channels(bot, channels)
+            LOGGER.info('Removed "%s" from core.channels.', channel)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('join')
-@sopel.module.priority('low')
-@sopel.module.example('.join #example key', user_help=True)
-@sopel.module.example('.join #example', user_help=True)
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('join')
+@plugin.priority('low')
+@plugin.example('.join #example key', user_help=True)
+@plugin.example('.join #example', user_help=True)
 def join(bot, trigger):
     """Join the specified channel. This is an admin-only command."""
     channel, key = trigger.group(3), trigger.group(4)
+    if not channel:
+        bot.reply(ERROR_JOIN_NO_CHANNEL)
+        return
+
     _join(bot, channel, key)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('tmpjoin')
-@sopel.module.priority('low')
-@sopel.module.example('.tmpjoin #example key', user_help=True)
-@sopel.module.example('.tmpjoin #example', user_help=True)
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('tmpjoin')
+@plugin.priority('low')
+@plugin.example('.tmpjoin #example key', user_help=True)
+@plugin.example('.tmpjoin #example', user_help=True)
 def temporary_join(bot, trigger):
     """Like ``join``, without saving. This is an admin-only command.
 
@@ -126,25 +141,33 @@ def temporary_join(bot, trigger):
     restarting the bot.
     """
     channel, key = trigger.group(3), trigger.group(4)
+    if not channel:
+        bot.reply(ERROR_JOIN_NO_CHANNEL)
+        return
+
     _join(bot, channel, key, save=False)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('part')
-@sopel.module.priority('low')
-@sopel.module.example('.part #example')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('part')
+@plugin.priority('low')
+@plugin.example('.part #example')
 def part(bot, trigger):
     """Part the specified channel. This is an admin-only command."""
     channel, _sep, part_msg = trigger.group(2).partition(' ')
+    if not channel:
+        bot.reply(ERROR_PART_NO_CHANNEL)
+        return
+
     _part(bot, channel, part_msg)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('tmppart')
-@sopel.module.priority('low')
-@sopel.module.example('.tmppart #example')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('tmppart')
+@plugin.priority('low')
+@plugin.example('.tmppart #example')
 def temporary_part(bot, trigger):
     """Like ``part``, without saving. This is an admin-only command.
 
@@ -152,87 +175,121 @@ def temporary_part(bot, trigger):
     restarting the bot.
     """
     channel, _sep, part_msg = trigger.group(2).partition(' ')
+    if not channel:
+        bot.reply(ERROR_PART_NO_CHANNEL)
+        return
+
     _part(bot, channel, part_msg, save=False)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_owner
-@sopel.module.commands('restart')
-@sopel.module.priority('low')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('chanlist', 'channels')
+@plugin.priority('low')
+def channel_list(bot, trigger):
+    """Show channels Sopel is in."""
+    channels = ', '.join(sorted(bot.channels.keys()))
+
+    # conservative assumption about how much room we have in the line to make
+    # sure `max_messages` won't actually truncate anything
+    bot.say(channels, max_messages=1 + len(channels) // 400)
+
+
+@plugin.require_privmsg
+@plugin.require_owner
+@plugin.command('restart')
+@plugin.priority('low')
 def restart(bot, trigger):
     """Restart the bot. This is an owner-only command."""
     quit_message = trigger.group(2)
+    default_message = 'Restarting on command from %s.' % trigger.nick
     if not quit_message:
-        quit_message = 'Restart on command from %s' % trigger.nick
+        quit_message = default_message
 
+    LOGGER.info(default_message)
     bot.restart(quit_message)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_owner
-@sopel.module.commands('quit')
-@sopel.module.priority('low')
+@plugin.require_privmsg
+@plugin.require_owner
+@plugin.command('quit')
+@plugin.priority('low')
 def quit(bot, trigger):
     """Quit from the server. This is an owner-only command."""
     quit_message = trigger.group(2)
+    default_message = 'Quitting on command from %s.' % trigger.nick
     if not quit_message:
-        quit_message = 'Quitting on command from %s' % trigger.nick
+        quit_message = default_message
 
+    LOGGER.info(default_message)
     bot.quit(quit_message)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('say', 'msg')
-@sopel.module.priority('low')
-@sopel.module.example('.say #YourPants Does anyone else smell neurotoxin?')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('say', 'msg')
+@plugin.priority('low')
+@plugin.example('.say #YourPants Does anyone else smell neurotoxin?')
 def say(bot, trigger):
     """
     Send a message to a given channel or nick. Can only be done in privmsg by
     an admin.
     """
     if trigger.group(2) is None:
+        bot.reply(ERROR_NOTHING_TO_SAY)
         return
 
     channel, _sep, message = trigger.group(2).partition(' ')
     message = message.strip()
     if not channel or not message:
+        bot.reply(ERROR_NOTHING_TO_SAY)
         return
 
     bot.say(message, channel)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('me')
-@sopel.module.priority('low')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('me')
+@plugin.priority('low')
 def me(bot, trigger):
     """
     Send an ACTION (/me) to a given channel or nick. Can only be done in
     privmsg by an admin.
     """
     if trigger.group(2) is None:
+        bot.reply(ERROR_NOTHING_TO_SAY)
         return
 
     channel, _sep, action = trigger.group(2).partition(' ')
     action = action.strip()
     if not channel or not action:
+        bot.reply(ERROR_NOTHING_TO_SAY)
         return
 
     bot.action(action, channel)
 
 
-@sopel.module.event('INVITE')
-@sopel.module.priority('low')
+@plugin.event('INVITE')
+@plugin.priority('low')
 def invite_join(bot, trigger):
     """Join a channel Sopel is invited to, if the inviter is an admin."""
-    if trigger.admin or bot.config.admin.auto_accept_invite:
-        bot.join(trigger.args[1])
-        return
+    channel = trigger.args[1]
+    if trigger.admin:
+        LOGGER.info(
+            'Got invited to "%s" by an admin.', channel)
+        bot.join(channel)
+    elif bot.config.admin.auto_accept_invite:
+        LOGGER.info(
+            'Got invited to "%s"; admin.auto_accept_invite is on', channel)
+        bot.join(channel)
+    else:
+        LOGGER.info(
+            'Got invited to "%s"; admin.auto_accept_invite is off.', channel)
 
 
-@sopel.module.event('KICK')
-@sopel.module.priority('low')
+@plugin.event('KICK')
+@plugin.priority('low')
 def hold_ground(bot, trigger):
     """
     This function monitors all kicks across all channels Sopel is in. If it
@@ -241,20 +298,29 @@ def hold_ground(bot, trigger):
     WARNING: This may not be needed and could cause problems if Sopel becomes
     annoying. Please use this with caution.
     """
+    if bot.nick != trigger.args[1]:
+        # not the bot; ignore
+        return
+
+    channel = trigger.sender
     if bot.config.admin.hold_ground:
-        channel = trigger.sender
-        if trigger.args[1] == bot.nick:
-            bot.join(channel)
+        LOGGER.info('Got kicked from "%s"; admin.hold_ground is on.', channel)
+        bot.join(channel)
+    else:
+        LOGGER.info('Got kicked from "%s"; admin.hold_ground is off.', channel)
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('mode')
-@sopel.module.priority('low')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('mode')
+@plugin.priority('low')
 def mode(bot, trigger):
     """Set a user mode on Sopel. Can only be done in privmsg by an admin."""
     mode = trigger.group(3)
-    bot.write(('MODE', bot.nick + ' ' + mode))
+    if not mode:
+        bot.reply('What mode should I set?')
+
+    bot.write(('MODE', bot.nick, mode))
 
 
 def parse_section_option_value(config, trigger):
@@ -284,7 +350,7 @@ def parse_section_option_value(config, trigger):
     section = getattr(config, section_name, False)
     if not section:
         raise InvalidSection(section_name)
-    static_sec = isinstance(section, StaticSection)
+    static_sec = isinstance(section, types.StaticSection)
 
     if static_sec and not hasattr(section, option):
         raise InvalidSectionOption(section_name, option)  # Option not found in section
@@ -304,10 +370,10 @@ def parse_section_option_value(config, trigger):
     return (section, section_name, static_sec, option, value)
 
 
-@sopel.module.require_privmsg("This command only works as a private message.")
-@sopel.module.require_admin("This command requires admin privileges.")
-@sopel.module.commands('set')
-@sopel.module.example('.set core.owner MyNick')
+@plugin.require_privmsg("This command only works as a private message.")
+@plugin.require_admin("This command requires admin privileges.")
+@plugin.command('set')
+@plugin.example('.set core.owner MyNick')
 def set_config(bot, trigger):
     """See and modify values of Sopel's config object.
 
@@ -321,19 +387,29 @@ def set_config(bot, trigger):
     try:
         section, section_name, static_sec, option, value = parse_section_option_value(bot.config, trigger)
     except ValueError:
-        bot.reply('Usage: {}set section.option [value]'.format(bot.config.core.help_prefix))
+        bot.say('Usage: {}set section.option [value]'.format(bot.config.core.help_prefix))
         return
     except (InvalidSection, InvalidSectionOption) as exc:
         bot.say(exc.args[1])
         return
 
+    # Get a descriptor class for the option if it's a static section
+    descriptor = getattr(section.__class__, option) if static_sec else None
+
     # Display current value if no value is given
     if not value:
-        if option.endswith("password") or option.endswith("pass"):
+        value = getattr(section, option)
+
+        if descriptor is not None:
+            if getattr(descriptor, 'is_secret', False):
+                # Keep secret option as secret
+                value = "(secret value censored)"
+        elif option.endswith("password") or option.endswith("pass"):
+            # Fallback to guessing if secret, for backward compatiblity
+            # TODO: consider a deprecation warning when loading settings
             value = "(password censored)"
-        else:
-            value = getattr(section, option)
-        bot.reply("%s.%s = %s (%s)" % (section_name, option, value, type(value).__name__))
+
+        bot.say("%s.%s = %s (%s)" % (section_name, option, value, type(value).__name__))
         return
 
     # Owner-related settings cannot be modified interactively. Any changes to these
@@ -344,24 +420,21 @@ def set_config(bot, trigger):
         return
 
     # Otherwise, set the value to one given
-    if static_sec:
-        descriptor = getattr(section.__class__, option)
+    if descriptor is not None:
         try:
-            if isinstance(descriptor, FilenameAttribute):
-                value = descriptor.parse(value, bot.config, descriptor)
-            else:
-                value = descriptor.parse(value)
+            value = descriptor._parse(value, bot.config, section)
         except ValueError as exc:
             bot.say("Can't set attribute: " + str(exc))
             return
     setattr(section, option, value)
+    LOGGER.info('%s.%s set successfully.', section_name, option)
     bot.say("OK. Set '{}.{}' successfully.".format(section_name, option))
 
 
-@sopel.module.require_privmsg("This command only works as a private message.")
-@sopel.module.require_admin("This command requires admin privileges.")
-@sopel.module.commands('unset')
-@sopel.module.example('.unset core.owner')
+@plugin.require_privmsg("This command only works as a private message.")
+@plugin.require_admin("This command requires admin privileges.")
+@plugin.command('unset')
+@plugin.example('.unset core.owner')
 def unset_config(bot, trigger):
     """Unset value of Sopel's config object.
 
@@ -376,27 +449,30 @@ def unset_config(bot, trigger):
     try:
         section, section_name, static_sec, option, value = parse_section_option_value(bot.config, trigger)
     except ValueError:
-        bot.reply('Usage: {}unset section.option [value]'.format(bot.config.core.help_prefix))
+        bot.say('Usage: {}unset section.option [value]'.format(bot.config.core.help_prefix))
         return
     except (InvalidSection, InvalidSectionOption) as exc:
         bot.say(exc.args[1])
         return
 
     if value:
-        bot.reply('Invalid command; no value should be provided to unset.')
+        bot.say('Invalid command; no value should be provided to unset.')
         return
 
     try:
         setattr(section, option, None)
-        bot.say("OK. Unset '{}.{}' successfully.".format(section_name, option))
+        LOGGER.info('%s.%s unset.', section_name, option)
+        bot.say("Unset '{}.{}' successfully.".format(section_name, option))
     except ValueError:
-        bot.reply('Cannot unset {}.{}; it is a required option.'.format(section_name, option))
+        bot.say('Cannot unset {}.{}; it is a required option.'.format(section_name, option))
 
 
-@sopel.module.require_privmsg
-@sopel.module.require_admin
-@sopel.module.commands('save')
-@sopel.module.example('.save')
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('save')
+@plugin.example('.save')
 def save_config(bot, trigger):
     """Save state of Sopel's config object to the configuration file."""
     bot.config.save()
+    LOGGER.info('Configuration file saved.')
+    bot.say('Configuration file saved.')

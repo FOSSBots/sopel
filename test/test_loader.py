@@ -1,6 +1,6 @@
 # coding=utf-8
 """Tests for the ``sopel.loader`` module."""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import inspect
 import re
@@ -11,7 +11,10 @@ from sopel import loader, module, plugins
 
 
 MOCK_MODULE_CONTENT = """# coding=utf-8
+import re
+
 import sopel.module
+import sopel.plugin
 
 
 @sopel.module.commands("first")
@@ -35,7 +38,16 @@ def interval10s(bot):
 
 
 @sopel.module.url(r'.\\.example\\.com')
-def example_url(bot):
+def example_url(bot, trigger, match=None):
+    pass
+
+
+def loader(settings):
+    return [re.compile(r'.+\\.example\\.com')]
+
+
+@sopel.plugin.url_lazy(loader)
+def example_url_lazy(bot, trigger):
     pass
 
 
@@ -51,6 +63,25 @@ def shutdown():
 def ignored():
     pass
 
+
+@sopel.module.rate(10)
+def ignored_rate():
+    pass
+
+
+class Ignored:
+    def __init__(self):
+        self.rule = [r'.*']
+
+    def __call__(self, bot, trigger):
+        pass
+
+ignored_obj = Ignored()
+
+def ignored_trickster():
+    pass
+
+ignored_trickster._sopel_callable = True
 """
 
 
@@ -98,6 +129,7 @@ def test_is_limitable(testplugin):
     assert not loader.is_limitable(test_mod.shutdown)
 
     assert loader.is_limitable(test_mod.example_url)
+    assert loader.is_limitable(test_mod.example_url_lazy)
 
 
 def test_is_triggerable(testplugin):
@@ -114,6 +146,25 @@ def test_is_triggerable(testplugin):
 
     assert not loader.is_triggerable(test_mod.shutdown)
     assert not loader.is_triggerable(test_mod.example_url)
+    assert not loader.is_triggerable(test_mod.example_url_lazy)
+
+
+def test_is_url_callback(testplugin):
+    """Test is_triggerable behavior before clean_module is called."""
+    testplugin.load()
+    test_mod = testplugin._module
+
+    assert not loader.is_url_callback(test_mod.first_command)
+    assert not loader.is_url_callback(test_mod.second_command)
+    assert not loader.is_url_callback(test_mod.on_topic_command)
+
+    assert not loader.is_url_callback(test_mod.interval5s)
+    assert not loader.is_url_callback(test_mod.interval10s)
+
+    assert not loader.is_url_callback(test_mod.shutdown)
+
+    assert loader.is_url_callback(test_mod.example_url)
+    assert loader.is_url_callback(test_mod.example_url_lazy)
 
 
 def test_clean_module(testplugin, tmpconfig):
@@ -132,8 +183,9 @@ def test_clean_module(testplugin, tmpconfig):
     assert test_mod.interval10s in jobs
     assert len(shutdowns)
     assert test_mod.shutdown in shutdowns
-    assert len(urls) == 1
+    assert len(urls) == 2
     assert test_mod.example_url in urls
+    assert test_mod.example_url_lazy in urls
 
     # assert is_triggerable behavior *after* clean_module has been called
     assert loader.is_triggerable(test_mod.first_command)
@@ -145,12 +197,30 @@ def test_clean_module(testplugin, tmpconfig):
 
     assert not loader.is_triggerable(test_mod.shutdown)
     assert not loader.is_triggerable(test_mod.example_url)
+    assert not loader.is_triggerable(test_mod.example_url_lazy)
 
     # ignored function is ignored
     assert test_mod.ignored not in callables
     assert test_mod.ignored not in jobs
     assert test_mod.ignored not in shutdowns
     assert test_mod.ignored not in urls
+    # @rate doesn't create a callable and is ignored
+    assert test_mod.ignored_rate not in callables
+    assert test_mod.ignored_rate not in jobs
+    assert test_mod.ignored_rate not in shutdowns
+    assert test_mod.ignored_rate not in urls
+    # object with a triggerable attribute are ignored by default
+    assert loader.is_triggerable(test_mod.ignored_obj)
+    assert test_mod.ignored_obj not in callables
+    assert test_mod.ignored_obj not in jobs
+    assert test_mod.ignored_obj not in shutdowns
+    assert test_mod.ignored_obj not in urls
+    # trickster function is ignored: it's still not a proper plugin callable
+    assert not loader.is_triggerable(test_mod.ignored_trickster)
+    assert test_mod.ignored_trickster not in callables
+    assert test_mod.ignored_trickster not in jobs
+    assert test_mod.ignored_trickster not in shutdowns
+    assert test_mod.ignored_trickster not in urls
 
 
 def test_clean_module_idempotency(testplugin, tmpconfig):
@@ -164,7 +234,7 @@ def test_clean_module_idempotency(testplugin, tmpconfig):
     assert len(callables) == 3
     assert len(jobs) == 2
     assert len(shutdowns) == 1
-    assert len(urls) == 1
+    assert len(urls) == 2
 
     # recall clean_module, we should have the same result
     new_callables, new_jobs, new_shutdowns, new_urls = loader.clean_module(
@@ -202,6 +272,8 @@ def test_clean_callable_default(tmpconfig, func):
     assert not hasattr(func, 'global_rate')
     assert not hasattr(func, 'event')
     assert not hasattr(func, 'rule')
+    assert not hasattr(func, 'find_rules')
+    assert not hasattr(func, 'search_rules')
     assert not hasattr(func, 'commands')
     assert not hasattr(func, 'nickname_commands')
     assert not hasattr(func, 'action_commands')
@@ -227,8 +299,7 @@ def test_clean_callable_command(tmpconfig, func):
     assert func.global_rate == 0
     assert hasattr(func, 'event')
     assert func.event == ['PRIVMSG']
-    assert hasattr(func, 'rule')
-    assert len(func.rule) == 1
+    assert not hasattr(func, 'rule')
 
 
 def test_clean_callable_event(tmpconfig, func):
@@ -284,7 +355,7 @@ def test_clean_callable_rule(tmpconfig, func):
     assert len(func.rule) == 1
 
     # Test the regex is compiled properly
-    regex = func.rule[0]
+    regex = re.compile(func.rule[0])
     assert regex.match('abc')
     assert regex.match('abcd')
     assert not regex.match('efg')
@@ -306,7 +377,8 @@ def test_clean_callable_rule(tmpconfig, func):
     # idempotency
     loader.clean_callable(func, tmpconfig)
     assert len(func.rule) == 1
-    assert regex in func.rule
+    assert regex not in func.rule
+    assert r'abc' in func.rule
 
     assert func.unblockable is False
     assert func.priority == 'medium'
@@ -324,71 +396,61 @@ def test_clean_callable_rule_string(tmpconfig, func):
     assert len(func.rule) == 1
 
     # Test the regex is compiled properly
-    regex = func.rule[0]
-    assert regex.match('abc')
-    assert regex.match('abcd')
-    assert not regex.match('efg')
+    assert func.rule[0] == r'abc'
 
     # idempotency
     loader.clean_callable(func, tmpconfig)
     assert len(func.rule) == 1
-    assert regex in func.rule
+    assert func.rule[0] == r'abc'
 
 
 def test_clean_callable_rule_nick(tmpconfig, func):
-    """Assert ``$nick`` in a rule will match ``TestBot: `` or ``TestBot, ``."""
+    """Assert ``$nick`` in a rule is not replaced (deprecated feature)."""
     setattr(func, 'rule', [r'$nickhello'])
     loader.clean_callable(func, tmpconfig)
 
     assert hasattr(func, 'rule')
     assert len(func.rule) == 1
 
-    # Test the regex is compiled properly
-    regex = func.rule[0]
-    assert regex.match('TestBot: hello')
-    assert regex.match('TestBot, hello')
-    assert not regex.match('TestBot not hello')
+    # Test the regex is not compiled
+    assert func.rule[0] == r'$nickhello'
 
     # idempotency
     loader.clean_callable(func, tmpconfig)
     assert len(func.rule) == 1
-    assert regex in func.rule
+    assert func.rule[0] == r'$nickhello'
 
 
 def test_clean_callable_rule_nickname(tmpconfig, func):
-    """Assert ``$nick`` in a rule will match ``TestBot``."""
+    """Assert ``$nickname`` in a rule is not replaced (deprecated feature)."""
     setattr(func, 'rule', [r'$nickname\s+hello'])
     loader.clean_callable(func, tmpconfig)
 
     assert hasattr(func, 'rule')
     assert len(func.rule) == 1
 
-    # Test the regex is compiled properly
-    regex = func.rule[0]
-    assert regex.match('TestBot hello')
-    assert not regex.match('TestBot not hello')
+    # Test the regex is not compiled
+    assert func.rule[0] == r'$nickname\s+hello'
 
     # idempotency
     loader.clean_callable(func, tmpconfig)
     assert len(func.rule) == 1
-    assert regex in func.rule
+    assert func.rule[0] == r'$nickname\s+hello'
 
 
-def test_clean_callable_nickname_command(tmpconfig, func):
-    setattr(func, 'nickname_commands', ['hello!'])
+def test_clean_callable_find_rules(tmpconfig, func):
+    setattr(func, 'find_rules', [r'abc'])
     loader.clean_callable(func, tmpconfig)
 
-    assert hasattr(func, 'nickname_commands')
-    assert len(func.nickname_commands) == 1
-    assert func.nickname_commands == ['hello!']
-    assert hasattr(func, 'rule')
-    assert len(func.rule) == 1
+    assert hasattr(func, 'find_rules')
+    assert len(func.find_rules) == 1
+    assert not hasattr(func, 'rule')
 
-    regex = func.rule[0]
-    assert regex.match('TestBot hello!')
-    assert regex.match('TestBot, hello!')
-    assert regex.match('TestBot: hello!')
-    assert not regex.match('TestBot not hello')
+    # Test the regex is compiled properly
+    regex = re.compile(func.find_rules[0])
+    assert regex.findall('abc')
+    assert regex.findall('abcd')
+    assert not regex.findall('adbc')
 
     # Default values
     assert hasattr(func, 'unblockable')
@@ -406,9 +468,91 @@ def test_clean_callable_nickname_command(tmpconfig, func):
 
     # idempotency
     loader.clean_callable(func, tmpconfig)
-    assert len(func.rule) == 1
-    assert regex in func.rule
+    assert hasattr(func, 'find_rules')
+    assert len(func.find_rules) == 1
+    assert regex not in func.find_rules
+    assert r'abc' in func.find_rules
+    assert not hasattr(func, 'rule')
 
+    assert func.unblockable is False
+    assert func.priority == 'medium'
+    assert func.thread is True
+    assert func.rate == 0
+    assert func.channel_rate == 0
+    assert func.global_rate == 0
+
+
+def test_clean_callable_search_rules(tmpconfig, func):
+    setattr(func, 'search_rules', [r'abc'])
+    loader.clean_callable(func, tmpconfig)
+
+    assert hasattr(func, 'search_rules')
+    assert len(func.search_rules) == 1
+    assert not hasattr(func, 'rule')
+
+    # Test the regex is compiled properly
+    regex = re.compile(func.search_rules[0])
+    assert regex.search('abc')
+    assert regex.search('xyzabc')
+    assert regex.search('abcd')
+    assert not regex.search('adbc')
+
+    # Default values
+    assert hasattr(func, 'unblockable')
+    assert func.unblockable is False
+    assert hasattr(func, 'priority')
+    assert func.priority == 'medium'
+    assert hasattr(func, 'thread')
+    assert func.thread is True
+    assert hasattr(func, 'rate')
+    assert func.rate == 0
+    assert hasattr(func, 'channel_rate')
+    assert func.channel_rate == 0
+    assert hasattr(func, 'global_rate')
+    assert func.global_rate == 0
+
+    # idempotency
+    loader.clean_callable(func, tmpconfig)
+    assert hasattr(func, 'search_rules')
+    assert len(func.search_rules) == 1
+    assert regex not in func.search_rules
+    assert func.search_rules[0] == r'abc'
+    assert not hasattr(func, 'rule')
+
+    assert func.unblockable is False
+    assert func.priority == 'medium'
+    assert func.thread is True
+    assert func.rate == 0
+    assert func.channel_rate == 0
+    assert func.global_rate == 0
+
+
+def test_clean_callable_nickname_command(tmpconfig, func):
+    setattr(func, 'nickname_commands', ['hello!'])
+    loader.clean_callable(func, tmpconfig)
+
+    assert hasattr(func, 'nickname_commands')
+    assert len(func.nickname_commands) == 1
+    assert func.nickname_commands == ['hello!']
+    assert not hasattr(func, 'rule')
+
+    # Default values
+    assert hasattr(func, 'unblockable')
+    assert func.unblockable is False
+    assert hasattr(func, 'priority')
+    assert func.priority == 'medium'
+    assert hasattr(func, 'thread')
+    assert func.thread is True
+    assert hasattr(func, 'rate')
+    assert func.rate == 0
+    assert hasattr(func, 'channel_rate')
+    assert func.channel_rate == 0
+    assert hasattr(func, 'global_rate')
+    assert func.global_rate == 0
+
+    # idempotency
+    loader.clean_callable(func, tmpconfig)
+    assert not hasattr(func, 'rule')
     assert func.unblockable is False
     assert func.priority == 'medium'
     assert func.thread is True
@@ -424,17 +568,12 @@ def test_clean_callable_action_command(tmpconfig, func):
     assert hasattr(func, 'action_commands')
     assert len(func.action_commands) == 1
     assert func.action_commands == ['bots']
-    assert hasattr(func, 'rule')
-    assert len(func.rule) == 1
-
-    regex = func.rule[0]
-    assert regex.match('bots bottingly')
-    assert not regex.match('spams spammingly')
+    assert not hasattr(func, 'rule')
 
     # idempotency
     loader.clean_callable(func, tmpconfig)
-    assert len(func.rule) == 1
-    assert regex in func.rule
+    assert not hasattr(func, 'rule')
+    assert func.action_commands == ['bots']
 
 
 def test_clean_callable_events(tmpconfig, func):

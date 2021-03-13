@@ -23,12 +23,14 @@ who should worry about :class:`sopel.bot.Sopel` only.
 # Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
 #
 # Licensed under the Eiffel Forum License 2.
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
-import sys
-import time
-import os
+from datetime import datetime
 import logging
+import os
+import sys
+import threading
+import time
 
 try:
     import ssl
@@ -43,15 +45,10 @@ except ImportError:
     # no SSL support
     has_ssl = False
 
-import threading
-from datetime import datetime
-
-from sopel import tools
-from sopel.trigger import PreTrigger
-
+from sopel import tools, trigger
 from .backends import AsynchatBackend, SSLAsynchatBackend
 from .isupport import ISupport
-from .utils import safe, CapReq
+from .utils import CapReq, safe
 
 if sys.version_info.major >= 3:
     unicode = str
@@ -92,7 +89,10 @@ class AbstractBot(object):
 
     @property
     def nick(self):
-        """Sopel's current ``Identifier``."""
+        """Sopel's current nick.
+
+        Changing this while Sopel is running is unsupported.
+        """
         return self._nick
 
     @property
@@ -102,7 +102,7 @@ class AbstractBot(object):
 
     @property
     def name(self):
-        """Sopel's "real name", to be displayed in WHOIS responses."""
+        """Sopel's "real name", as used for WHOIS responses."""
         return self._name
 
     @property
@@ -177,28 +177,32 @@ class AbstractBot(object):
         try:
             self.backend.run_forever()
         except KeyboardInterrupt:
+            # raised only when the bot is not connected
             LOGGER.warning('Keyboard Interrupt')
-            self.quit('KeyboardInterrupt')
-
-    # Connection Events
+            raise
 
     def on_connect(self):
         """Handle successful establishment of IRC connection."""
+        LOGGER.info('Connected, initiating setup sequence')
+
         # Request list of server capabilities. IRCv3 servers will respond with
         # CAP * LS (which we handle in coretasks). v2 servers will respond with
         # 421 Unknown command, which we'll ignore
+        LOGGER.debug('Sending CAP request')
         self.backend.send_command('CAP', 'LS', '302')
 
         # authenticate account if needed
         if self.settings.core.auth_method == 'server':
+            LOGGER.debug('Sending server auth')
             self.backend.send_pass(self.settings.core.auth_password)
         elif self.settings.core.server_auth_method == 'server':
+            LOGGER.debug('Sending server auth')
             self.backend.send_pass(self.settings.core.server_auth_password)
 
+        LOGGER.debug('Sending nick "%s"', self.nick)
         self.backend.send_nick(self.nick)
-        self.backend.send_user(self.user, '+iw', self.nick, self.name)
-
-        LOGGER.info('Connected.')
+        LOGGER.debug('Sending user "%s" (name: "%s")', self.user, self.name)
+        self.backend.send_user(self.user, '0', '*', self.name)
 
     def on_message(self, message):
         """Handle an incoming IRC message.
@@ -207,7 +211,11 @@ class AbstractBot(object):
         """
         self.last_raw_line = message
 
-        pretrigger = PreTrigger(self.nick, message)
+        pretrigger = trigger.PreTrigger(
+            self.nick,
+            message,
+            url_schemes=self.settings.core.auto_url_schemes,
+        )
         if all(cap not in self.enabled_capabilities for cap in ['account-tag', 'extended-join']):
             pretrigger.tags.pop('account', None)
 
@@ -215,13 +223,7 @@ class AbstractBot(object):
             self.backend.send_pong(pretrigger.args[-1])
         elif pretrigger.event == 'ERROR':
             LOGGER.error("ERROR received from server: %s", pretrigger.args[-1])
-            if self.hasquit:
-                # TODO: refactor direct interface with asynchat
-                self.backend.close_when_done()
-        elif pretrigger.event == '433':
-            LOGGER.error('Nickname already in use!')
-            # TODO: refactor direct interface with asynchat
-            self.backend.handle_close()
+            self.backend.on_irc_error(pretrigger)
 
         self.dispatch(pretrigger)
 
@@ -254,19 +256,15 @@ class AbstractBot(object):
                 except KeyError:
                     pass  # we tried, and that's good enough
 
-            pretrigger = PreTrigger(
+            pretrigger = trigger.PreTrigger(
                 self.nick,
-                ":{0}!{1}@{2} {3}".format(self.nick, self.user, host, raw)
+                ":{0}!{1}@{2} {3}".format(self.nick, self.user, host, raw),
+                url_schemes=self.settings.core.auto_url_schemes,
             )
             self.dispatch(pretrigger)
 
     def on_error(self):
-        """Handle any uncaptured error in the bot itself.
-
-        This method is an override of :meth:`asyncore.dispatcher.handle_error`,
-        the :class:`asynchat.async_chat` being a subclass of
-        :class:`asyncore.dispatcher`.
-        """
+        """Handle any uncaptured error in the bot itself."""
         LOGGER.error('Fatal error in core, please review exceptions log.')
 
         err_log = logging.getLogger('sopel.exceptions')
@@ -282,13 +280,25 @@ class AbstractBot(object):
 
         if self.error_count > 10:
             # quit if too many errors
-            if (datetime.now() - self.last_error_timestamp).seconds < 5:
+            dt = datetime.utcnow() - self.last_error_timestamp
+            dt_seconds = dt.total_seconds()
+            if dt_seconds < 5:
                 LOGGER.error('Too many errors, can\'t continue')
                 os._exit(1)
-            # TODO: should we reset error_count?
+            # remove 1 error per full 5s that passed since last error
+            self.error_count = max(0, self.error_count - dt_seconds // 5)
 
-        self.last_error_timestamp = datetime.now()
+        self.last_error_timestamp = datetime.utcnow()
         self.error_count = self.error_count + 1
+
+    def change_current_nick(self, new_nick):
+        """Change the current nick without configuration modification.
+
+        :param str new_nick: new nick to be used by the bot
+        """
+        self._nick = tools.Identifier(new_nick)
+        LOGGER.debug('Sending nick "%s"', self.nick)
+        self.backend.send_nick(self.nick)
 
     def on_close(self):
         """Call shutdown methods."""
@@ -327,11 +337,11 @@ class AbstractBot(object):
         logger = logging.getLogger('sopel.raw')
         logger.info('\t'.join([prefix, line.strip()]))
 
-    def cap_req(self, module_name, capability, arg=None, failure_callback=None,
+    def cap_req(self, plugin_name, capability, arg=None, failure_callback=None,
                 success_callback=None):
         """Tell Sopel to request a capability when it starts.
 
-        :param str module_name: the module requesting the capability
+        :param str plugin_name: the plugin requesting the capability
         :param str capability: the capability requested, optionally prefixed
                                with ``-`` or ``=``
         :param str arg: arguments for the capability request
@@ -345,16 +355,16 @@ class AbstractBot(object):
         By prefixing the capability with ``-``, it will be ensured that the
         capability is not enabled. Similarly, by prefixing the capability with
         ``=``, it will be ensured that the capability is enabled. Requiring and
-        disabling is "first come, first served"; if one module requires a
+        disabling is "first come, first served"; if one plugin requires a
         capability, and another prohibits it, this function will raise an
-        exception in whichever module loads second. An exception will also be
-        raised if the module is being loaded after the bot has already started,
+        exception in whichever plugin loads second. An exception will also be
+        raised if the plugin is being loaded after the bot has already started,
         and the request would change the set of enabled capabilities.
 
-        If the capability is not prefixed, and no other module prohibits it, it
+        If the capability is not prefixed, and no other plugin prohibits it, it
         will be requested. Otherwise, it will not be requested. Since
         capability requests that are not mandatory may be rejected by the
-        server, as well as by other modules, a module which makes such a
+        server, as well as by other plugins, a plugin which makes such a
         request should account for that possibility.
 
         The actual capability request to the server is handled after the
@@ -370,7 +380,7 @@ class AbstractBot(object):
         capability negotiation, or later.
 
         If ``arg`` is given, and does not exactly match what the server
-        provides or what other modules have requested for that capability, it is
+        provides or what other plugins have requested for that capability, it is
         considered a conflict.
         """
         # TODO raise better exceptions
@@ -387,7 +397,7 @@ class AbstractBot(object):
                                 'connection has been completed.')
             if any((ent.prefix != '-' for ent in entry)):
                 raise Exception('Capability conflict')
-            entry.append(CapReq(prefix, module_name, failure_callback, arg,
+            entry.append(CapReq(prefix, plugin_name, failure_callback, arg,
                                 success_callback))
             self._cap_reqs[cap] = entry
         else:
@@ -402,7 +412,7 @@ class AbstractBot(object):
             # rejected it.
             if any((ent.prefix == '-' for ent in entry)) and prefix == '=':
                 raise Exception('Capability conflict')
-            entry.append(CapReq(prefix, module_name, failure_callback, arg,
+            entry.append(CapReq(prefix, plugin_name, failure_callback, arg,
                                 success_callback))
             self._cap_reqs[cap] = entry
 
@@ -526,40 +536,95 @@ class AbstractBot(object):
         else:
             self.say(text, dest)
 
-    def say(self, text, recipient, max_messages=1):
+    def say(self, text, recipient, max_messages=1, trailing=''):
         """Send a PRIVMSG to a user or channel.
 
         :param str text: the text to send
         :param str recipient: the message recipient
         :param int max_messages: split ``text`` into at most this many messages
                                  if it is too long to fit in one (optional)
+        :param str trailing: text to append if ``text`` is too long to fit in
+                             a single message, or into the last message if
+                             ``max_messages`` is greater than 1 (optional)
 
         By default, this will attempt to send the entire ``text`` in one
         message. If the text is too long for the server, it may be truncated.
 
         If ``max_messages`` is given, the ``text`` will be split into at most
-        that many messages, each no more than 400 bytes. The split is made at
-        the last space character before the 400th byte, or at the 400th byte
-        if no such space exists.
+        that many messages. The split is made at the last space character
+        before the "safe length" (which is calculated based on the bot's
+        nickname and hostmask), or exactly at the "safe length" if no such
+        space character exists.
 
         If the ``text`` is too long to fit into the specified number of
         messages using the above splitting, the final message will contain the
         entire remainder, which may be truncated by the server.
+
+        The ``trailing`` parameter allows gracefully terminating a ``text``
+        that is too long to fit in the specified number of messages. The final
+        message (or only message, if ``max_messages`` is left at the default
+        value of 1) will be truncated slightly to fit the ``trailing`` string.
+        Note that the ``trailing`` parameter must include leading whitespace
+        if you desire any between it and the truncated text.
+
+        .. versionadded:: 7.1
+
+            The ``trailing`` parameter.
+
         """
         excess = ''
         if not isinstance(text, unicode):
             # Make sure we are dealing with a Unicode string
             text = text.decode('utf-8')
 
-        if max_messages > 1:
-            # Manage multi-line only when needed
-            text, excess = tools.get_sendable_message(text)
+        if max_messages > 1 or trailing:
+            # Handle message splitting/truncation only if needed
+            try:
+                hostmask_length = len(self.hostmask)
+            except KeyError:
+                # calculate maximum possible length, given current nick/username
+                hostmask_length = (
+                    len(self.nick)  # own nick length
+                    + 1  # (! separator)
+                    + 1  # (for the optional ~ in user)
+                    + min(  # own ident length, capped to ISUPPORT or RFC maximum
+                        len(self.user),
+                        getattr(self.isupport, 'USERLEN', 9))
+                    + 1  # (@ separator)
+                    + 63  # <hostname> has a maximum length of 63 characters.
+                )
+            safe_length = (
+                512  # maximum IRC line length in bytes, per RFC
+                - 1  # leading colon
+                - hostmask_length  # calculated/maximum length of own hostmask prefix
+                - 1  # space between prefix & command
+                - 7  # PRIVMSG command
+                - 1  # space before recipient
+                - len(recipient.encode('utf-8'))  # target channel/nick (can contain Unicode)
+                - 2  # space after recipient, colon before text
+                - 2  # trailing CRLF
+            )
+            text, excess = tools.get_sendable_message(text, safe_length)
+
+        if max_messages == 1 and excess and trailing:
+            # only append `trailing` if this is the last message AND it's still too long
+            safe_length -= len(trailing.encode('utf-8'))
+            text, excess = tools.get_sendable_message(text, safe_length)
+            text += trailing
+
+        flood_max_wait = self.settings.core.flood_max_wait
+        flood_burst_lines = self.settings.core.flood_burst_lines
+        flood_refill_rate = self.settings.core.flood_refill_rate
+        flood_empty_wait = self.settings.core.flood_empty_wait
+
+        flood_text_length = self.settings.core.flood_text_length
+        flood_penalty_ratio = self.settings.core.flood_penalty_ratio
 
         with self.sending:
             recipient_id = tools.Identifier(recipient)
             recipient_stack = self.stack.setdefault(recipient_id, {
                 'messages': [],
-                'flood_left': self.config.core.flood_burst_lines,
+                'flood_left': flood_burst_lines,
             })
 
             if recipient_stack['messages']:
@@ -573,15 +638,36 @@ class AbstractBot(object):
             # based on how long it's been since our last message to recipient
             if not recipient_stack['flood_left']:
                 recipient_stack['flood_left'] = min(
-                    self.config.core.flood_burst_lines,
-                    int(elapsed) * self.config.core.flood_refill_rate)
+                    flood_burst_lines,
+                    int(elapsed) * flood_refill_rate)
 
             # If it's too soon to send another message, wait
             if not recipient_stack['flood_left']:
-                penalty = float(max(0, len(text) - 50)) / 70
-                wait = min(self.config.core.flood_empty_wait + penalty, 2)  # Maximum wait time is 2 sec
+                penalty = 0
+
+                if flood_penalty_ratio > 0:
+                    penalty_ratio = flood_text_length * flood_penalty_ratio
+                    text_length_overflow = float(
+                        max(0, len(text) - flood_text_length))
+                    penalty = text_length_overflow / penalty_ratio
+
+                # Maximum wait time is 2 sec by default
+                initial_wait_time = flood_empty_wait + penalty
+                wait = min(initial_wait_time, flood_max_wait)
                 if elapsed < wait:
-                    time.sleep(wait - elapsed)
+                    sleep_time = wait - elapsed
+                    LOGGER.debug(
+                        'Flood protection wait time: %.3fs; '
+                        'elapsed time: %.3fs; '
+                        'initial wait time (limited to %.3fs): %.3fs '
+                        '(including %.3fs of penalty).',
+                        sleep_time,
+                        elapsed,
+                        flood_max_wait,
+                        initial_wait_time,
+                        penalty,
+                    )
+                    time.sleep(sleep_time)
 
             # Loop detection
             messages = [m[1] for m in recipient_stack['messages'][-8:]]
@@ -599,7 +685,7 @@ class AbstractBot(object):
             recipient_stack['messages'].append((time.time(), safe(text)))
             recipient_stack['messages'] = recipient_stack['messages'][-10:]
 
-        # Now that we've sent the first part, we need to send the rest. Doing
-        # this recursively seems easier to me than iteratively
-        if excess:
-            self.say(excess, recipient, max_messages - 1)
+        # Now that we've sent the first part, we need to send the rest if
+        # requested. Doing so recursively seems simpler than iteratively.
+        if max_messages > 1 and excess:
+            self.say(excess, recipient, max_messages - 1, trailing)

@@ -48,7 +48,7 @@ the :class:`Config` object is instantiated; it uses
 # Copyright © 2012, Elad Alfassa <elad@fedoraproject.org>
 # Licensed under the Eiffel Forum License 2.
 
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import os
 import sys
@@ -159,6 +159,30 @@ class Config(object):
         else:
             return os.path.dirname(self.filename)
 
+    def get_defined_sections(self):
+        """Retrieve all defined static sections of this configuration.
+
+        :return: all instances of :class:`~sopel.config.types.StaticSection`
+                 defined for this configuration file
+        :rtype: list
+
+        When a plugin defines a section (using :meth:`define_section`), it
+        associates a :class:`~sopel.config.types.StaticSection` for the section.
+        This method allows to retrieve these instances of ``StaticSection``,
+        and only these.
+
+        .. versionadded:: 7.1
+        """
+        sections = (
+            (name, getattr(self, name))
+            for name in self.parser.sections()
+        )
+        return [
+            (name, section)
+            for name, section in sections
+            if isinstance(section, types.StaticSection)
+        ]
+
     def save(self):
         """Write all changes to the config file.
 
@@ -194,6 +218,20 @@ class Config(object):
             :meth:`define_section` and a child class of
             :class:`~.types.StaticSection`.
 
+        .. important::
+
+            The section's ``name`` SHOULD follow *snake_case* naming rules:
+
+              * use only lowercase letters, digits, and underscore (``_``)
+              * SHOULD NOT start with a digit
+
+            Deviations from *snake_case* can break the following operations:
+
+              * :ref:`accessing the section <sopel.config>` from Python code using
+                the :class:`~.Config` object's attributes
+              * :ref:`overriding the section's values <Overriding individual
+                settings>` using environment variables
+
         """
         try:
             return self.parser.add_section(name)
@@ -216,6 +254,21 @@ class Config(object):
         raised if they are invalid. This is desirable in a plugin's
         :func:`setup` function, for example, but might not be in the
         :func:`configure` function.
+
+        .. important::
+
+            The section's ``name`` SHOULD follow *snake_case* naming rules:
+
+              * use only lowercase letters, digits, and underscore (``_``)
+              * SHOULD NOT start with a digit
+
+            Deviations from *snake_case* can break the following operations:
+
+              * :ref:`accessing the section <sopel.config>` from Python code using
+                the :class:`~.Config` object's attributes
+              * :ref:`overriding the section's values <Overriding individual
+                settings>` using environment variables
+
         """
         if not issubclass(cls_, types.StaticSection):
             raise ValueError("Class must be a subclass of StaticSection.")

@@ -2,11 +2,14 @@
 # Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
 #
 # Licensed under the Eiffel Forum License 2.
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import collections
 import sys
-from dns import resolver, rdtypes
+
+from dns import rdtypes, resolver
+
+from sopel.tools import deprecated
 
 if sys.version_info.major >= 3:
     unicode = str
@@ -34,7 +37,30 @@ def get_cnames(domain):
 
 
 def safe(string):
-    """Remove newlines from a string."""
+    """Remove newlines from a string.
+
+    :param str string: input text to process
+    :return: the string without newlines
+    :rtype: str
+    :raises TypeError: when ``string`` is ``None``
+
+    This function removes newlines from a string and always returns a unicode
+    string (as in ``str`` on Python 3 and ``unicode`` on Python 2), but doesn't
+    strip or alter it in any other way::
+
+        >>> safe('some text\\r\\n')
+        'some text'
+
+    This is useful to ensure a string can be used in a IRC message.
+
+    .. versionchanged:: 7.1
+
+        This function now raises a :exc:`TypeError` instead of an unpredictable
+        behaviour when given ``None``.
+
+    """
+    if string is None:
+        raise TypeError('safe function requires a string, not NoneType')
     if sys.version_info.major >= 3 and isinstance(string, bytes):
         string = string.decode("utf8")
     elif sys.version_info.major < 3:
@@ -48,9 +74,10 @@ def safe(string):
 class CapReq(object):
     """Represents a pending CAP REQ request.
 
-    :param str prefix: either ``=`` (must be enabled)
-                       or ``-`` (must **not** be enabled)
-    :param str module: the requesting package/module name
+    :param str prefix: either ``=`` (must be enabled),
+                       ``-`` (must **not** be enabled),
+                       or empty string (desired but optional)
+    :param str plugin: the requesting plugin's name
     :param failure: function to call if this capability request fails
     :type failure: :term:`function`
     :param str arg: optional capability value; the request will fail if
@@ -66,15 +93,24 @@ class CapReq(object):
         For more information on how capability requests work, see the
         documentation for :meth:`sopel.irc.AbstractBot.cap_req`.
     """
-    def __init__(self, prefix, module, failure=None, arg=None, success=None):
+    def __init__(self, prefix, plugin, failure=None, arg=None, success=None):
         def nop(bot, cap):
             pass
         # TODO at some point, reorder those args to be sane
         self.prefix = prefix
-        self.module = module
+        self.plugin = plugin
         self.arg = arg
         self.failure = failure or nop
         self.success = success or nop
+
+    @property
+    @deprecated(
+        reason='use the `plugin` property instead',
+        version='7.1',
+        removed_in='8.0',
+    )
+    def module(self):
+        return self.plugin
 
 
 class MyInfo(collections.namedtuple('MyInfo', MYINFO_ARGS)):

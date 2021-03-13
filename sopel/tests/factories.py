@@ -3,12 +3,12 @@
 
 .. versionadded:: 7.0
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import re
 
 from sopel import bot, config, plugins, trigger
-from .mocks import MockIRCServer, MockUser, MockIRCBackend
+from .mocks import MockIRCBackend, MockIRCServer, MockUser
 
 
 class BotFactory(object):
@@ -93,9 +93,10 @@ class TriggerFactory(object):
         return bot.SopelWrapper(mockbot, trigger)
 
     def __call__(self, mockbot, raw, pattern=None):
+        url_schemes = mockbot.settings.core.auto_url_schemes
         return trigger.Trigger(
             mockbot.settings,
-            trigger.PreTrigger(mockbot.nick, raw),
+            trigger.PreTrigger(mockbot.nick, raw, url_schemes=url_schemes),
             re.match(pattern or r'.*', raw))
 
 

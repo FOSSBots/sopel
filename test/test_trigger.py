@@ -1,13 +1,14 @@
 # coding=utf-8
 """Tests for message parsing"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
-import re
-import pytest
 import datetime
+import re
 
-from sopel.trigger import PreTrigger, Trigger
+import pytest
+
 from sopel.tools import Identifier
+from sopel.trigger import PreTrigger, Trigger
 
 
 TMP_CONFIG = """
@@ -40,6 +41,7 @@ def test_basic_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['#Sopel', 'Hello, world']
     assert pretrigger.text == 'Hello, world'
+    assert pretrigger.plain == 'Hello, world'
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -55,6 +57,7 @@ def test_pm_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['Sopel', 'Hello, world']
     assert pretrigger.text == 'Hello, world'
+    assert pretrigger.plain == 'Hello, world'
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -70,6 +73,7 @@ def test_quit_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['quit message text']
     assert pretrigger.text == 'quit message text'
+    assert pretrigger.plain == 'quit message text'
     assert pretrigger.event == 'QUIT'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -85,6 +89,7 @@ def test_join_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['#Sopel']
     assert pretrigger.text == '#Sopel'
+    assert pretrigger.plain == '#Sopel'
     assert pretrigger.event == 'JOIN'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -102,6 +107,7 @@ def test_tags_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['#Sopel', 'Hello, world']
     assert pretrigger.text == 'Hello, world'
+    assert pretrigger.plain == 'Hello, world'
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -117,6 +123,7 @@ def test_intents_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['#Sopel', 'Hello, world']
     assert pretrigger.text == 'Hello, world'
+    assert pretrigger.plain == 'Hello, world'
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -132,6 +139,7 @@ def test_unusual_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == []
     assert pretrigger.text == 'PING'
+    assert pretrigger.plain == ''
     assert pretrigger.event == 'PING'
 
 
@@ -143,6 +151,7 @@ def test_ctcp_intent_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['Sopel', '']
     assert pretrigger.text == '\x01VERSION\x01'
+    assert pretrigger.plain == ''
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -158,11 +167,57 @@ def test_ctcp_data_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['Sopel', '1123321']
     assert pretrigger.text == '\x01PING 1123321\x01'
+    assert pretrigger.plain == '1123321'
     assert pretrigger.event == 'PRIVMSG'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
     assert pretrigger.host == 'example.com'
     assert pretrigger.sender == Identifier('Foo')
+
+
+def test_ctcp_action_pretrigger(nick):
+    line = ':Foo!foo@example.com PRIVMSG #Sopel :\x01ACTION Hello, world\x01'
+    pretrigger = PreTrigger(nick, line)
+    assert pretrigger.tags == {'intent': 'ACTION'}
+    assert pretrigger.hostmask == 'Foo!foo@example.com'
+    assert pretrigger.line == line
+    assert pretrigger.args == ['#Sopel', 'Hello, world']
+    assert pretrigger.text == '\x01ACTION Hello, world\x01'
+    assert pretrigger.plain == 'Hello, world'
+    assert pretrigger.event == 'PRIVMSG'
+    assert pretrigger.nick == Identifier('Foo')
+    assert pretrigger.user == 'foo'
+    assert pretrigger.host == 'example.com'
+    assert pretrigger.sender == '#Sopel'
+
+
+def test_ctcp_action_trigger(nick, configfactory):
+    line = ':Foo!bar@example.com PRIVMSG #Sopel :\x01ACTION Hello, world\x01'
+    pretrigger = PreTrigger(nick, line)
+
+    config = configfactory('default.cfg', TMP_CONFIG)
+    fakematch = re.match('.*', line)
+
+    trigger = Trigger(config, pretrigger, fakematch)
+    assert trigger.sender == '#Sopel'
+    assert trigger.raw == line
+    assert trigger.is_privmsg is False
+    assert trigger.hostmask == 'Foo!bar@example.com'
+    assert trigger.user == 'bar'
+    assert trigger.nick == Identifier('Foo')
+    assert trigger.host == 'example.com'
+    assert trigger.event == 'PRIVMSG'
+    assert trigger.match == fakematch
+    assert trigger.group == fakematch.group
+    assert trigger.groups == fakematch.groups
+    assert trigger.groupdict == fakematch.groupdict
+    assert trigger.args == ['#Sopel', 'Hello, world']
+    assert trigger.plain == 'Hello, world'
+    assert trigger.tags == {'intent': 'ACTION'}
+    assert trigger.ctcp == 'ACTION'
+    assert trigger.account is None
+    assert trigger.admin is True
+    assert trigger.owner is True
 
 
 def test_ircv3_extended_join_pretrigger(nick):
@@ -173,6 +228,7 @@ def test_ircv3_extended_join_pretrigger(nick):
     assert pretrigger.line == line
     assert pretrigger.args == ['#Sopel', 'bar', 'Real Name']
     assert pretrigger.text == 'Real Name'
+    assert pretrigger.plain == 'Real Name'
     assert pretrigger.event == 'JOIN'
     assert pretrigger.nick == Identifier('Foo')
     assert pretrigger.user == 'foo'
@@ -201,8 +257,10 @@ def test_ircv3_extended_join_trigger(nick, configfactory):
     assert trigger.group == fakematch.group
     assert trigger.groups == fakematch.groups
     assert trigger.args == ['#Sopel', 'bar', 'Real Name']
+    assert trigger.plain == 'Real Name'
     assert trigger.account == 'bar'
     assert trigger.tags == {'account': 'bar'}
+    assert trigger.ctcp is None
     assert trigger.owner is True
     assert trigger.admin is True
 
@@ -228,7 +286,9 @@ def test_ircv3_intents_trigger(nick, configfactory):
     assert trigger.groups == fakematch.groups
     assert trigger.groupdict == fakematch.groupdict
     assert trigger.args == ['#Sopel', 'Hello, world']
+    assert trigger.plain == 'Hello, world'
     assert trigger.tags == {'intent': 'ACTION'}
+    assert trigger.ctcp == 'ACTION'
     assert trigger.account is None
     assert trigger.admin is True
     assert trigger.owner is True

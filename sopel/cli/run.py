@@ -8,7 +8,7 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse
 import logging
@@ -18,7 +18,7 @@ import signal
 import sys
 import time
 
-from sopel import bot, config, logger, tools, __version__
+from sopel import __version__, bot, config, logger, tools
 from . import utils
 
 # This is in case someone somehow manages to install Sopel on an old version
@@ -30,11 +30,9 @@ if sys.version_info < (2, 7) or (
     tools.stderr('Error: Sopel requires Python 2.7+ or 3.3+.')
     sys.exit(1)
 if sys.version_info.major == 2:
-    now = time.time()
-    state = 'has reached end of life'
-    if now >= 1588291200:  # 2020-05-01 00:00:00 UTC
-        state += ' and will receive no further updates'
-    tools.stderr('Warning: Python 2.x %s. Sopel 8.0 will drop support for it.' % state)
+    tools.stderr(
+        'Warning: Python 2.x has reached end of life and will receive '
+        'no further updates. Sopel 8.0 will drop support for it.')
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +47,13 @@ encounters such an error case.
 
 
 def run(settings, pid_file, daemon=False):
+    """Run the bot with these ``settings``.
+
+    :param settings: settings with which to run the bot
+    :type settings: :class:`sopel.config.Config`
+    :param str pid_file: path to the bot's PID file
+    :param bool daemon: tell if the bot should be run as a daemon
+    """
     delay = 20
 
     # Acts as a welcome message, showing the program and platform version at start
@@ -60,14 +65,6 @@ def run(settings, pid_file, daemon=False):
         tools.stderr(
             'Could not open CA certificates file. SSL will not work properly!')
 
-    def signal_handler(sig, frame):
-        if sig == signal.SIGUSR1 or sig == signal.SIGTERM or sig == signal.SIGINT:
-            LOGGER.warning('Got quit signal, shutting down.')
-            p.quit('Closing')
-        elif sig == signal.SIGUSR2 or sig == signal.SIGILL:
-            LOGGER.warning('Got restart signal, shutting down and restarting.')
-            p.restart('Restarting')
-
     # Define empty variable `p` for bot
     p = None
     while True:
@@ -75,18 +72,10 @@ def run(settings, pid_file, daemon=False):
             break
         try:
             p = bot.Sopel(settings, daemon=daemon)
-            if hasattr(signal, 'SIGUSR1'):
-                signal.signal(signal.SIGUSR1, signal_handler)
-            if hasattr(signal, 'SIGTERM'):
-                signal.signal(signal.SIGTERM, signal_handler)
-            if hasattr(signal, 'SIGINT'):
-                signal.signal(signal.SIGINT, signal_handler)
-            if hasattr(signal, 'SIGUSR2'):
-                signal.signal(signal.SIGUSR2, signal_handler)
-            if hasattr(signal, 'SIGILL'):
-                signal.signal(signal.SIGILL, signal_handler)
             p.setup()
+            p.set_signal_handlers()
         except KeyboardInterrupt:
+            tools.stderr('Bot setup interrupted')
             break
         except Exception:
             # In that case, there is nothing we can do.
@@ -130,6 +119,11 @@ def run(settings, pid_file, daemon=False):
 
 
 def add_legacy_options(parser):
+    """Add legacy options to the argument parser.
+
+    :param parser: argument parser
+    :type parser: :class:`argparse.ArgumentParser`
+    """
     # TL;DR: option -d/--fork is not deprecated.
     # When the legacy action is replaced in Sopel 8, 'start' will become the
     # new default action, with its arguments.
@@ -186,7 +180,11 @@ def add_legacy_options(parser):
 
 
 def build_parser():
-    """Build an ``argparse.ArgumentParser`` for the bot"""
+    """Build an argument parser for the bot.
+
+    :return: the argument parser
+    :rtype: :class:`argparse.ArgumentParser`
+    """
     parser = argparse.ArgumentParser(description='Sopel IRC Bot',
                                      usage='%(prog)s [options]')
     add_legacy_options(parser)
@@ -329,7 +327,7 @@ def get_configuration(options):
     """Get or create a configuration object from ``options``.
 
     :param options: argument parser's options
-    :type options: ``argparse.Namespace``
+    :type options: :class:`argparse.Namespace`
     :return: a configuration object
     :rtype: :class:`sopel.config.Config`
 
@@ -356,22 +354,24 @@ def get_configuration(options):
     return settings
 
 
-def get_pid_filename(options, pid_dir):
-    """Get the pid file name in ``pid_dir`` from the given ``options``.
+def get_pid_filename(settings, pid_dir):
+    """Get the pid file name in ``pid_dir`` from the given ``settings``.
 
-    :param options: command line options
+    :param settings: Sopel config
+    :type settings: :class:`sopel.config.Config`
     :param str pid_dir: path to the pid directory
     :return: absolute filename of the pid file
 
-    By default, it's ``sopel.pid``, but if a configuration filename is given
-    in the ``options``, its basename is used to generate the filename, as:
+    By default, it's ``sopel.pid``, but if the configuration's basename is not
+    ``default`` then it will be used to generate the pid file name as
     ``sopel-{basename}.pid`` instead.
     """
     name = 'sopel.pid'
-    if options.config and options.config != 'default':
-        basename = os.path.basename(options.config)
-        if basename.endswith('.cfg'):
-            basename = basename[:-4]
+    if settings.basename != 'default':
+        filename = os.path.basename(settings.filename)
+        basename, ext = os.path.splitext(filename)
+        if ext != '.cfg':
+            basename = filename
         name = 'sopel-%s.pid' % basename
 
     return os.path.abspath(os.path.join(pid_dir, name))
@@ -399,21 +399,25 @@ def get_running_pid(filename):
 
 
 def command_start(opts):
-    """Start a Sopel instance"""
+    """Start a Sopel instance.
+
+    :param opts: parsed arguments
+    :type opts: :class:`argparse.Namespace`
+    """
     # Step One: Get the configuration file and prepare to run
     try:
-        config_module = get_configuration(opts)
+        settings = get_configuration(opts)
     except config.ConfigurationError as e:
         tools.stderr(e)
         return ERR_CODE_NO_RESTART
 
-    if config_module.core.not_configured:
+    if settings.core.not_configured:
         tools.stderr('Bot is not configured, can\'t start')
         return ERR_CODE_NO_RESTART
 
     # Step Two: Handle process-lifecycle options and manage the PID file
-    pid_dir = config_module.core.pid_dir
-    pid_file_path = get_pid_filename(opts, pid_dir)
+    pid_dir = settings.core.pid_dir
+    pid_file_path = get_pid_filename(settings, pid_dir)
     pid = get_running_pid(pid_file_path)
 
     if pid is not None and tools.check_pid(pid):
@@ -432,7 +436,7 @@ def command_start(opts):
         pid_file.write(str(os.getpid()))
 
     # Step Three: Run Sopel
-    ret = run(config_module, pid_file_path)
+    ret = run(settings, pid_file_path)
 
     # Step Four: Shutdown Clean-Up
     os.unlink(pid_file_path)
@@ -446,7 +450,11 @@ def command_start(opts):
 
 
 def command_configure(opts):
-    """Sopel Configuration Wizard"""
+    """Sopel Configuration Wizard.
+
+    :param opts: parsed arguments
+    :type opts: :class:`argparse.Namespace`
+    """
     configpath = utils.find_config(opts.configdir, opts.config)
     if opts.plugins:
         utils.plugins_wizard(configpath)
@@ -455,7 +463,11 @@ def command_configure(opts):
 
 
 def command_stop(opts):
-    """Stop a running Sopel instance"""
+    """Stop a running Sopel instance.
+
+    :param opts: parsed arguments
+    :type opts: :class:`argparse.Namespace`
+    """
     # Get Configuration
     try:
         settings = utils.load_settings(opts)
@@ -471,7 +483,7 @@ def command_stop(opts):
     logger.setup_logging(settings)
 
     # Get Sopel's PID
-    filename = get_pid_filename(opts, settings.core.pid_dir)
+    filename = get_pid_filename(settings, settings.core.pid_dir)
     pid = get_running_pid(filename)
 
     if pid is None or not tools.check_pid(pid):
@@ -494,7 +506,11 @@ def command_stop(opts):
 
 
 def command_restart(opts):
-    """Restart a running Sopel instance"""
+    """Restart a running Sopel instance.
+
+    :param opts: parsed arguments
+    :type opts: :class:`argparse.Namespace`
+    """
     # Get Configuration
     try:
         settings = utils.load_settings(opts)
@@ -510,7 +526,7 @@ def command_restart(opts):
     logger.setup_logging(settings)
 
     # Get Sopel's PID
-    filename = get_pid_filename(opts, settings.core.pid_dir)
+    filename = get_pid_filename(settings, settings.core.pid_dir)
     pid = get_running_pid(filename)
 
     if pid is None or not tools.check_pid(pid):
@@ -527,7 +543,10 @@ def command_restart(opts):
 
 
 def command_legacy(opts):
-    """Legacy Sopel run script
+    """Legacy Sopel run script.
+
+    :param opts: parsed arguments
+    :type opts: :class:`argparse.Namespace`
 
     The ``legacy`` command manages the old-style ``sopel`` command line tool.
     Most of its features are replaced by the following commands:
@@ -585,18 +604,18 @@ def command_legacy(opts):
 
     # Step Two: Get the configuration file and prepare to run
     try:
-        config_module = get_configuration(opts)
+        settings = get_configuration(opts)
     except config.ConfigurationError as e:
         tools.stderr(e)
         return ERR_CODE_NO_RESTART
 
-    if config_module.core.not_configured:
+    if settings.core.not_configured:
         tools.stderr('Bot is not configured, can\'t start')
         return ERR_CODE_NO_RESTART
 
     # Step Three: Handle process-lifecycle options and manage the PID file
-    pid_dir = config_module.core.pid_dir
-    pid_file_path = get_pid_filename(opts, pid_dir)
+    pid_dir = settings.core.pid_dir
+    pid_file_path = get_pid_filename(settings, pid_dir)
     old_pid = get_running_pid(pid_file_path)
 
     if old_pid is not None and tools.check_pid(old_pid):
@@ -649,7 +668,7 @@ def command_legacy(opts):
         pid_file.write(str(os.getpid()))
 
     # Step Four: Initialize and run Sopel
-    ret = run(config_module, pid_file_path)
+    ret = run(settings, pid_file_path)
     os.unlink(pid_file_path)
     if ret == -1:
         os.execv(sys.executable, ['python'] + sys.argv)
@@ -658,7 +677,10 @@ def command_legacy(opts):
 
 
 def main(argv=None):
-    """Sopel run script entry point"""
+    """Sopel run script entry point.
+
+    :param list argv: command line arguments
+    """
     try:
         # Step One: Parse The Command Line
         parser = build_parser()

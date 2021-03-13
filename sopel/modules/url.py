@@ -1,6 +1,6 @@
 # coding=utf-8
 """
-url.py - Sopel URL Title Module
+url.py - Sopel URL Title Plugin
 Copyright 2010-2011, Michael Yanovich (yanovich.net) & Kenneth Sham
 Copyright 2012-2013, Elsie Powell
 Copyright 2013, Lior Ramati <firerogue517@gmail.com>
@@ -9,17 +9,18 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
+import ipaddress
+import logging
 import re
 
 import dns.resolver
-import ipaddress
 import requests
 from urllib3.exceptions import LocationValueError
 
-from sopel import __version__, module, tools
-from sopel.config.types import ListAttribute, StaticSection, ValidatedAttribute
+from sopel import plugin, tools
+from sopel.config import types
 from sopel.tools import web
 
 # Python3 vs Python2
@@ -28,34 +29,46 @@ try:
 except ImportError:
     from urlparse import urlparse
 
-USER_AGENT = 'Sopel/{} (https://sopel.chat)'.format(__version__)
-default_headers = {'User-Agent': USER_AGENT}
+LOGGER = logging.getLogger(__name__)
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/78.0.3904.108 Safari/537.36'
+)
+DEFAULT_HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8',
+    'Accept-Language': 'en,en-US;q=0,5',
+}
 # These are used to clean up the title tag before actually parsing it. Not the
 # world's best way to do this, but it'll do for now.
-title_tag_data = re.compile('<(/?)title( [^>]+)?>', re.IGNORECASE)
-quoted_title = re.compile('[\'"]<title>[\'"]', re.IGNORECASE)
+TITLE_TAG_DATA = re.compile('<(/?)title( [^>]+)?>', re.IGNORECASE)
+QUOTED_TITLE = re.compile('[\'"]<title>[\'"]', re.IGNORECASE)
 # This is another regex that presumably does something important.
-re_dcc = re.compile(r'(?i)dcc\ssend')
+RE_DCC = re.compile(r'(?i)dcc\ssend')
 # This sets the maximum number of bytes that should be read in order to find
 # the title. We don't want it too high, or a link to a big file/stream will
 # just keep downloading until there's no more memory. 640k ought to be enough
-# for anybody.
-max_bytes = 655360
+# for anybody, but the modern web begs to differ.
+MAX_BYTES = 655360 * 2
 
 
-class UrlSection(StaticSection):
+class UrlSection(types.StaticSection):
+    enable_auto_title = types.ValidatedAttribute(
+        'enable_auto_title', bool, default=True)
+    """Enable auto-title (enabled by default)"""
     # TODO some validation rules maybe?
-    exclude = ListAttribute('exclude')
+    exclude = types.ListAttribute('exclude')
     """A list of regular expressions to match URLs for which the title should not be shown."""
-    exclusion_char = ValidatedAttribute('exclusion_char', default='!')
+    exclusion_char = types.ValidatedAttribute('exclusion_char', default='!')
     """A character (or string) which, when immediately preceding a URL, will stop that URL's title from being shown."""
-    shorten_url_length = ValidatedAttribute(
+    shorten_url_length = types.ValidatedAttribute(
         'shorten_url_length', int, default=0)
     """If greater than 0, the title fetcher will include a TinyURL version of links longer than this many characters."""
-    enable_private_resolution = ValidatedAttribute(
+    enable_private_resolution = types.ValidatedAttribute(
         'enable_private_resolution', bool, default=False)
     """Enable URL lookups for RFC1918 addresses"""
-    enable_dns_resolution = ValidatedAttribute(
+    enable_dns_resolution = types.ValidatedAttribute(
         'enable_dns_resolution', bool, default=False)
     """Enable DNS resolution for all domains to validate if there are RFC1918 resolutions"""
 
@@ -64,6 +77,7 @@ def configure(config):
     """
     | name | example | purpose |
     | ---- | ------- | ------- |
+    | enable_auto_title | yes | Enable auto-title. |
     | exclude | https?://git\\\\.io/.* | A list of regular expressions for URLs for which the title should not be shown. |
     | exclusion\\_char | ! | A character (or string) which, when immediately preceding a URL, will stop the URL's title from being shown. |
     | shorten\\_url\\_length | 72 | If greater than 0, the title fetcher will include a TinyURL version of links longer than this many characters. |
@@ -71,6 +85,10 @@ def configure(config):
     | enable\\_dns\\_resolution | False | Enable DNS resolution for all domains to validate if there are RFC1918 resolutions. |
     """
     config.define_section('url', UrlSection)
+    config.url.configure_setting(
+        'enable_auto_title',
+        'Enable auto-title?'
+    )
     config.url.configure_setting(
         'exclude',
         'Enter regular expressions for each URL you would like to exclude.'
@@ -104,7 +122,7 @@ def setup(bot):
         regexes = []
 
     # We're keeping these in their own list, rather than putting then in the
-    # callbacks list because 1, it's easier to deal with modules that are still
+    # callbacks list because 1, it's easier to deal with plugins that are still
     # using this list, and not the newer callbacks list and 2, having a lambda
     # just to pass is kinda ugly.
     if 'url_exclude' not in bot.memory:
@@ -117,7 +135,7 @@ def setup(bot):
 
     # Ensure last_seen_url is in memory
     if 'last_seen_url' not in bot.memory:
-        bot.memory['last_seen_url'] = tools.SopelMemory()
+        bot.memory['last_seen_url'] = tools.SopelIdentifierMemory()
 
     # Initialize shortened_urls as a dict if it doesn't exist.
     if 'shortened_urls' not in bot.memory:
@@ -135,11 +153,12 @@ def shutdown(bot):
             pass
 
 
-@module.commands('title')
-@module.example(
+@plugin.command('title')
+@plugin.example(
     '.title https://www.google.com',
-    '[ Google ] - www.google.com',
-    online=True)
+    'Google | www.google.com',
+    online=True, vcr=True)
+@plugin.output_prefix('[url] ')
 def title_command(bot, trigger):
     """
     Show the title or URL information for the given URL, or the last URL seen
@@ -160,20 +179,26 @@ def title_command(bot, trigger):
             exclusion_char=bot.config.url.exclusion_char)
 
     for url, title, domain, tinyurl in process_urls(bot, trigger, urls):
-        message = '[ %s ] - %s' % (title, domain)
+        message = '%s | %s' % (title, domain)
         if tinyurl:
             message += ' ( %s )' % tinyurl
         bot.reply(message)
         bot.memory['last_seen_url'][trigger.sender] = url
 
 
-@module.rule(r'(?u).*(https?://\S+).*')
+@plugin.rule(r'(?u).*(https?://\S+).*')
+@plugin.output_prefix('[url] ')
 def title_auto(bot, trigger):
     """
     Automatically show titles for URLs. For shortened URLs/redirects, find
     where the URL redirects to and show the title for that (or call a function
-    from another module to give more information).
+    from another plugin to give more information).
     """
+    # Enabled or disabled by feature flag
+    if not bot.settings.url.enable_auto_title:
+        return
+
+    # Avoid fetching links from the "title" command
     if re.match(bot.config.core.prefix + 'title', trigger):
         return
 
@@ -186,7 +211,7 @@ def title_auto(bot, trigger):
         trigger, exclusion_char=bot.config.url.exclusion_char, clean=True)
 
     for url, title, domain, tinyurl in process_urls(bot, trigger, urls):
-        message = '[ %s ] - %s' % (title, domain)
+        message = '%s | %s' % (title, domain)
         if tinyurl:
             message += ' ( %s )' % tinyurl
         # Guard against responding to other instances of this bot.
@@ -197,11 +222,11 @@ def title_auto(bot, trigger):
 
 def process_urls(bot, trigger, urls):
     """
-    For each URL in the list, ensure that it isn't handled by another module.
+    For each URL in the list, ensure that it isn't handled by another plugin.
     If not, find where it redirects to, if anywhere. If that redirected URL
-    should be handled by another module, dispatch the callback for it.
+    should be handled by another plugin, dispatch the callback for it.
     Return a list of (title, hostname) tuples for each URL which is not handled
-    by another module.
+    by another plugin.
     """
     shorten_url_length = bot.config.url.shorten_url_length
     for url in urls:
@@ -219,6 +244,7 @@ def process_urls(bot, trigger, urls):
             # Check if it's an address like http://192.168.1.1
             try:
                 if ipaddress.ip_address(parsed.hostname).is_private or ipaddress.ip_address(parsed.hostname).is_loopback:
+                    LOGGER.debug('Ignoring private URL: %s', url)
                     continue
             except ValueError:
                 pass
@@ -231,12 +257,14 @@ def process_urls(bot, trigger, urls):
                         private = True
                         break
                 if private:
+                    LOGGER.debug('Ignoring private URL: %s', url)
                     continue
 
         # Call the URL to get a title, if possible
         title = find_title(url)
         if not title:
             # No title found: don't handle this URL
+            LOGGER.warning('No title found; ignoring URL: %s', url)
             continue
 
         # If the URL is over bot.config.url.shorten_url_length, shorten the URL
@@ -252,11 +280,11 @@ def check_callbacks(bot, url):
 
     :param bot: Sopel instance
     :param str url: URL to check
-    :return: True if ``url`` is excluded or matches any URL Callback pattern
+    :return: True if ``url`` is excluded or matches any URL callback pattern
 
     This function looks at the ``bot.memory`` for ``url_exclude`` patterns and
     it returns ``True`` if any matches the given ``url``. Otherwise, it looks
-    at the ``bot``'s URL Callback patterns, and it returns ``True`` if any
+    at the ``bot``'s URL callback patterns, and it returns ``True`` if any
     matches, ``False`` otherwise.
 
     .. seealso::
@@ -272,35 +300,42 @@ def check_callbacks(bot, url):
     """
     # Check if it matches the exclusion list first
     matched = any(regex.search(url) for regex in bot.memory['url_exclude'])
-    return matched or any(bot.search_url_callbacks(url))
+    return (
+        matched or
+        any(bot.search_url_callbacks(url)) or
+        bot.rules.check_url_callback(bot, url)
+    )
 
 
 def find_title(url, verify=True):
     """Return the title for the given URL."""
     try:
         response = requests.get(url, stream=True, verify=verify,
-                                headers=default_headers)
+                                headers=DEFAULT_HEADERS)
         content = b''
         for byte in response.iter_content(chunk_size=512):
             content += byte
-            if b'</title>' in content or len(content) > max_bytes:
+            if b'</title>' in content or len(content) > MAX_BYTES:
                 break
         content = content.decode('utf-8', errors='ignore')
         # Need to close the connection because we have not read all
         # the data
         response.close()
+    except requests.exceptions.ConnectionError:
+        LOGGER.exception('Unable to reach URL: %s', url)
+        return None
     except (
-        requests.exceptions.ConnectionError,
         requests.exceptions.InvalidURL,  # e.g. http:///
         UnicodeError,  # e.g. http://.example.com (urllib3<1.26)
         LocationValueError,  # e.g. http://.example.com (urllib3>=1.26)
     ):
+        LOGGER.debug('Invalid URL: %s', url)
         return None
 
     # Some cleanup that I don't really grok, but was in the original, so
     # we'll keep it (with the compiled regexes made global) for now.
-    content = title_tag_data.sub(r'<\1title>', content)
-    content = quoted_title.sub('', content)
+    content = TITLE_TAG_DATA.sub(r'<\1title>', content)
+    content = QUOTED_TITLE.sub('', content)
 
     start = content.rfind('<title>')
     end = content.rfind('</title>')
@@ -312,7 +347,7 @@ def find_title(url, verify=True):
     title = ' '.join(title.split())  # cleanly remove multiple spaces
 
     # More cryptic regex substitutions. This one looks to be myano's invention.
-    title = re_dcc.sub('', title)
+    title = RE_DCC.sub('', title)
 
     return title or None
 
@@ -364,8 +399,3 @@ def get_tinyurl(url):
     # Replace text output with https instead of http to make the
     # result an HTTPS link.
     return res.text.replace("http://", "https://")
-
-
-if __name__ == "__main__":
-    from sopel.test_tools import run_example_tests
-    run_example_tests(__file__)

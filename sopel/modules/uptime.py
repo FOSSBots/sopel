@@ -1,16 +1,16 @@
 # coding=utf-8
 """
-uptime.py - Sopel Uptime Module
+uptime.py - Sopel Uptime Plugin
 Copyright 2014, Fabian Neundorf
 Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import datetime
 
-from sopel.module import commands
+from sopel import plugin
 
 
 def setup(bot):
@@ -18,9 +18,11 @@ def setup(bot):
         bot.memory["start_time"] = datetime.datetime.utcnow()
 
 
-@commands('uptime')
+@plugin.command('uptime')
+@plugin.example('.uptime', user_help=True)
+@plugin.output_prefix('[uptime] ')
 def uptime(bot, trigger):
-    """.uptime - Returns the uptime of Sopel."""
+    """Return the uptime of Sopel."""
     delta = datetime.timedelta(seconds=round((datetime.datetime.utcnow() -
                                               bot.memory["start_time"])
                                              .total_seconds()))

@@ -1,18 +1,18 @@
 # coding=utf-8
 """
-unicode_info.py - Sopel Codepoints Module
+unicode_info.py - Sopel Codepoints Plugin
 Copyright 2013, Elsie Powell, embolalia.com
 Copyright 2008, Sean B. Palmer, inamidst.com
 Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import sys
 import unicodedata
 
-from sopel import module
+from sopel import plugin
 
 if sys.version_info.major >= 3:
     # Note on unicode and str (required for py2 compatibility)
@@ -43,15 +43,16 @@ def get_codepoint_name(char):
     return point, name
 
 
-@module.commands('u')
-@module.example('.u ‽', 'U+203D INTERROBANG (‽)', user_help=True)
-@module.example('.u 203D', 'U+203D INTERROBANG (‽)', user_help=True)
+@plugin.command('u')
+@plugin.example('.u ‽', 'U+203D INTERROBANG (‽)', user_help=True)
+@plugin.example('.u 203D', 'U+203D INTERROBANG (‽)', user_help=True)
+@plugin.output_prefix('[unicode] ')
 def codepoint(bot, trigger):
     """Look up a Unicode character or a hexadecimal code point."""
     arg = trigger.group(2)
     if not arg:
         bot.reply('What code point do you want me to look up?')
-        return module.NOLIMIT
+        return plugin.NOLIMIT
     stripped = arg.strip()
     if len(stripped) > 0:
         arg = stripped
@@ -62,7 +63,7 @@ def codepoint(bot, trigger):
             arg = unichr(int(arg, 16))
         except (ValueError, TypeError):
             bot.reply("That's not a valid code point.")
-            return module.NOLIMIT
+            return plugin.NOLIMIT
 
     point, name = get_codepoint_name(arg)
     if name is None:
@@ -73,8 +74,3 @@ def codepoint(bot, trigger):
         template = 'U+%s %s (%s)'
 
     bot.say(template % (point, name, arg))
-
-
-if __name__ == "__main__":
-    from sopel.test_tools import run_example_tests
-    run_example_tests(__file__)

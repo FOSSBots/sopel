@@ -1,18 +1,21 @@
 # coding=utf-8
 """Sopel Plugins Command Line Interface (CLI): ``sopel-plugins``"""
-from __future__ import unicode_literals, absolute_import, print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse
 import inspect
 import operator
 
 from sopel import plugins, tools
-
 from . import utils
 
 
 def build_parser():
-    """Configure an argument parser for ``sopel-plugins``"""
+    """Configure an argument parser for ``sopel-plugins``.
+
+    :return: the argument parser
+    :rtype: :class:`argparse.ArgumentParser`
+    """
     parser = argparse.ArgumentParser(
         description='Sopel plugins tool')
 
@@ -150,7 +153,12 @@ def build_parser():
 
 
 def handle_list(options):
-    """List Sopel plugins"""
+    """List Sopel plugins.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine
+    """
     settings = utils.load_settings(options)
     no_color = options.no_color
     name_only = options.name_only
@@ -227,7 +235,13 @@ def handle_list(options):
 
 
 def handle_show(options):
-    """Show plugin details"""
+    """Show plugin details.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine;
+             1 if the plugin doesn't exist or can't be loaded
+    """
     plugin_name = options.name
     settings = utils.load_settings(options)
     usable_plugins = plugins.get_usable_plugins(settings)
@@ -277,7 +291,13 @@ def handle_show(options):
 
 
 def handle_configure(options):
-    """Configure a Sopel plugin with a config wizard"""
+    """Configure a Sopel plugin with a config wizard.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine;
+             1 if the plugin doesn't exist or can't be loaded
+    """
     plugin_name = options.name
     settings = utils.load_settings(options)
     usable_plugins = plugins.get_usable_plugins(settings)
@@ -340,6 +360,10 @@ def _handle_disable_plugin(settings, plugin_name, force):
 
 
 def display_unknown_plugins(unknown_plugins):
+    """Print an error message when one or more plugins are unknown.
+
+    :param list unknown_plugins: list of unknown plugins
+    """
     # at least one of the plugins does not exist
     tools.stderr(utils.get_many_text(
         unknown_plugins,
@@ -350,7 +374,14 @@ def display_unknown_plugins(unknown_plugins):
 
 
 def handle_disable(options):
-    """Disable Sopel plugins"""
+    """Disable Sopel plugins.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine;
+             1 if the plugin doesn't exist,
+             or if attempting to disable coretasks (required)
+    """
     plugin_names = options.names
     force = options.force
     ensure_remove = options.remove
@@ -451,7 +482,13 @@ def _handle_enable_plugin(settings, usable_plugins, plugin_name, allow_only):
 
 
 def handle_enable(options):
-    """Enable a Sopel plugin"""
+    """Enable a Sopel plugin.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine;
+             1 if the plugin doesn't exist
+    """
     plugin_names = options.names
     allow_only = options.allow_only
     settings = utils.load_settings(options)
@@ -490,7 +527,7 @@ def handle_enable(options):
 
 
 def main():
-    """Console entry point for ``sopel-plugins``"""
+    """Console entry point for ``sopel-plugins``."""
     parser = build_parser()
     options = parser.parse_args()
     action = options.action
