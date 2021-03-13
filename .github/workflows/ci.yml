@@ -2,8 +2,8 @@ name: 'Main CI Build'
 on:
   push:
     branches:
-      - dev
-      - release
+      - master
+      - Testing
   pull_request_target:
 
 jobs:
