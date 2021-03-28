@@ -110,3 +110,5 @@ Open Collective profile, for transparency.
    :target: https://coveralls.io/github/sopel-irc/sopel?branch=master
 .. |license| image:: https://img.shields.io/pypi/l/sopel.svg
    :target: https://github.com/sopel-irc/sopel/blob/master/COPYING
+
+test
