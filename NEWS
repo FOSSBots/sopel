@@ -11,7 +11,7 @@ Core changes
 * Make sure Sopel continues to install smoothly on all of its supported Python
   versions after November 2020 changes in `urllib3` 1.26
 * Updated a few spots in tests and documentation to keep our 7.0.x maintenance
-  branch in tip-top shape
+  branch in tip-top shape.
 
 
 Changes between 7.0.5 and 7.0.6
