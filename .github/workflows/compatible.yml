@@ -1,14 +1,14 @@
-name: 'Main CI Build'
+name: 'Compatibility Checks'
 on:
   push:
     branches:
-      - master
-      - Testing
+      - dev
+      - release
   pull_request_target:
 
 jobs:
-  test:
-    name: Test Build (Python ${{ matrix.python }} on ${{ matrix.os }})
+  check:
+    name: Check Compatibility for Python ${{ matrix.python }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -21,28 +21,26 @@ jobs:
           access_token: ${{ github.token }}
       - uses: actions/checkout@v2
         with:
-          submodules: false
+          submodules: true
       - name: Setup Python ${{ matrix.python }} on ${{ matrix.os }}
         uses: actions/setup-python@v2
         with:
-          python-version: ${{ matrix.python }}
+          python-version: ${{ matrix.python }} 
       - name: Install packages
         run: |
-          python -m pip install --upgrade pip
-          pip install -r dev-requirements.txt
-          pyproject-build --wheel --outdir dist .
-          find dist -name "*.whl" | xargs pip3 install
+          python -m pip install --upgrade pip 
+          pip install --upgrade wheel
+          pip install .
+          pip install -r compatibility.txt
       - name: Show python version and show package
         run: |
           python --version
           sopel --version
-      - name: Run tests
+          pip show MirahezeBot-Plugins
+      - name: Check compatibility
         run: |
-          make quality
           pip check
       - name: Run pip freeze and pipdeptree
         run: |
           pip freeze
           pipdeptree
-      - name: Show outdated packages
-        run: pip list --outdated
