@@ -37,7 +37,9 @@ jobs:
           python --version
           sopel --version
       - name: Run tests
-        run: make quality
+        run: |
+          make quality
+          pip check
       - name: Run pip freeze and pipdeptree
         run: |
           pip freeze
