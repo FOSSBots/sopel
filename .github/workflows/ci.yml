@@ -38,7 +38,7 @@ jobs:
           sopel --version
       - name: Run tests
         run: |
-          make quality
+          flake8 .
           pytest .
           pip check
       - name: Run pip freeze and pipdeptree
