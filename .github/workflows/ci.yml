@@ -39,6 +39,7 @@ jobs:
       - name: Run tests
         run: |
           make quality
+          pytest .
           pip check
       - name: Run pip freeze and pipdeptree
         run: |
