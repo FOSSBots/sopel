@@ -9,6 +9,6 @@ sphinx
 # further constrain autoprogram version because the new (in 2021) maintainer
 # already demonstrated a willingness to make major changes in patch versions
 sphinxcontrib-autoprogram<=0.1.7
-vcrpy<3.0.0
+vcrpy<5.0.0
 build==0.3.1.post1
 pipdeptree==2.0.0
