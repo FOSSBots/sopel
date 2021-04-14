@@ -1,5 +1,5 @@
 coveralls>=2.0
-flake8>=3.7.0,<3.8.0
+flake8>=3.7.0,<3.10.0
 flake8-coding
 flake8-future-import<0.4.6
 flake8-import-order<=1.18.1
