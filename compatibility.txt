@@ -12,7 +12,7 @@ sopel-modules.urban==1.1.0
 sopel-dns==0.3.1
 pipdeptree==2.0.0
 MirahezeBot-Plugins==9.1.2
-sopel-plugins.adminlist==1.0.5
+sopel-plugins.adminlist==1.0.6
 sopel-plugins.channelmgnt==2.0.1
 sopel-plugins.joinall==1.0.2
 sopel-plugins.pingpong==1.0.4
