@@ -15,6 +15,6 @@ MirahezeBot-Plugins==9.1.2
 sopel-plugins.adminlist==1.0.5
 sopel-plugins.channelmgnt==2.0.1
 sopel-plugins.joinall==1.0.2
-sopel-plugins.pingpong==1.0.4
+sopel-plugins.pingpong==1.0.5
 rsa>=4.7 # not directly required, pinned by Snyk to avoid a vulnerability
 urllib3==1.26.4 # pinned to avoid sec issue
