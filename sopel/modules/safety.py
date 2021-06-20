@@ -47,9 +47,7 @@ cache_limit = 512
 
 
 class SafetySection(types.StaticSection):
-    enabled_by_default = types.ValidatedAttribute('enabled_by_default',
-                                                  bool,
-                                                  default=True)
+    enabled_by_default = types.BooleanAttribute('enabled_by_default', default=True)
     """Whether to enable URL safety in all channels where it isn't explicitly disabled."""
     known_good = types.ListAttribute('known_good')
     """List of "known good" domains to ignore."""
@@ -110,7 +108,13 @@ def setup(bot):
         _download_domain_list(loc)
     with open(loc, 'r') as f:
         for line in f:
-            clean_line = unicode(line).strip().lower()
+            if sys.version_info.major < 3:
+                line = unicode(line, 'utf-8')
+            else:
+                line = unicode(line)
+
+            clean_line = line.strip().lower()
+
             if not clean_line or clean_line[0] == '#':
                 # blank line or comment
                 continue

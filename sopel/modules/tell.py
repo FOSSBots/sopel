@@ -25,8 +25,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TellSection(types.StaticSection):
-    use_private_reminder = types.ValidatedAttribute(
-        'use_private_reminder', parse=bool, default=False)
+    use_private_reminder = types.BooleanAttribute(
+        'use_private_reminder', default=False)
     """When set to ``true``, Sopel will send reminder as private message."""
     maximum_public = types.ValidatedAttribute(
         'maximum_public', parse=int, default=4)
@@ -154,7 +154,7 @@ def f_remind(bot, trigger):
     if not os.path.exists(bot.tell_filename):
         return
 
-    if len(tellee) > 30:  # TODO: use server NICKLEN here when available
+    if len(tellee) > bot.isupport.get('NICKLEN', 30):
         bot.reply('That nickname is too long.')
         return
 
@@ -162,7 +162,7 @@ def f_remind(bot, trigger):
         tellee = tellee[1:]
 
     if tellee == bot.nick:
-        bot.reply("I'm here now; you can tell me whatever you want!")
+        bot.reply("I'm here now; you can %s me whatever you want!" % verb)
         return
 
     if tellee not in (tools.Identifier(teller), bot.nick, 'me'):

@@ -171,7 +171,7 @@ def say_snippet(bot, trigger, server, query, show_url=True):
     if show_url:
         trailing += ' | ' + url
 
-    bot.say(msg, trailing=' […]' + trailing)
+    bot.say(msg, truncation=' […]', trailing=trailing)
 
 
 def mw_snippet(server, query):
@@ -200,7 +200,7 @@ def say_section(bot, trigger, server, query, section):
         return
 
     msg = '{} - {} | "{}"'.format(page_name, section.replace('_', ' '), snippet)
-    bot.say(msg, trailing=' […]"')
+    bot.say(msg, truncation=' […]"')
 
 
 def mw_section(server, query, section):
@@ -255,6 +255,7 @@ def mw_info(bot, trigger, match=None):
 @plugin.example('.w San Francisco')
 @plugin.output_prefix('[wikipedia] ')
 def wikipedia(bot, trigger):
+    """Search Wikipedia."""
     if trigger.group(2) is None:
         bot.reply("What do you want me to look up?")
         return plugin.NOLIMIT

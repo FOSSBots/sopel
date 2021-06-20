@@ -10,7 +10,7 @@ A typical configuration file looks like this::
 
     [core]
     nick = Sopel
-    host = chat.freenode.net
+    host = irc.libera.chat
     use_ssl = true
     port = 6697
     owner = dgw
@@ -122,10 +122,10 @@ on the IRC server the bot connects to.
    The list of available modes depends on the implementation of the IRC server,
    and its configuration.
 
-   For example, the `user modes on freenode`__ is different from the list of
-   available `user modes on an UnrealIRCd server`__.
+   For example, the `user modes on Libera Chat`__ are different from the list
+   of available `user modes on an UnrealIRCd server`__.
 
-   .. __: https://freenode.net/kb/answer/usermodes
+   .. __: https://libera.chat/guides/usermodes
    .. __: https://www.unrealircd.org/docs/User_modes
 
 Owner & Admins
@@ -167,14 +167,14 @@ IRC Server
 To connect to a server, your bot needs these directives:
 
 * :attr:`~CoreSection.host`: the server's hostname. Can be a domain name
-  (like ``chat.freenode.net``) or an IP address.
+  (like ``irc.libera.chat``) or an IP address.
 * :attr:`~CoreSection.port`: optional, the port to connect to. Usually 6697 for
   SSL connection and 6667 for unsecure connection, the default value the bot
   will use to connect to the server.
 * :attr:`~CoreSection.use_ssl`: connect using SSL (see below)::
 
     [core]
-    host = chat.freenode.net
+    host = irc.libera.chat
     port = 6697
     use_ssl = true
 
@@ -187,6 +187,13 @@ Ping Timeout
 By default, if Sopel doesn't get a PING from the server every 120s, it will
 consider that the connection has timed out. This amount of time can be modified
 with the :attr:`~CoreSection.timeout` directive.
+
+Internally, Sopel will try to send a ``PING`` either:
+
+* every 50s
+* or 50s after the last message was received by the bot
+
+This value can be modified with the :attr:`~CoreSection.timeout_ping_interval`.
 
 SSL Connection
 --------------
@@ -392,11 +399,13 @@ And for **nick-based** methods:
 * ``Q``
 * ``userserv``
 
-These additional options can be used to configure the authentication method
-and the required credentials:
+Several additional options can be used to configure the authentication method
+and the required credentials. You can follow the link for each to find more
+details:
 
-* :attr:`~CoreSection.auth_username`: account's username, if required
-* :attr:`~CoreSection.auth_password`: account's password
+* :attr:`~CoreSection.auth_username`: account's username, if used by
+  the ``auth_method``
+* :attr:`~CoreSection.auth_password`: password for authentication
 * :attr:`~CoreSection.auth_target`: authentication method's target, if required
   by the ``auth_method``:
 
@@ -421,6 +430,16 @@ And here is an example of server-based authentication using SASL::
     auth_username = BotAccount     # your bot's username
     auth_password = SopelIsGreat!  # your bot's password
     auth_target = PLAIN            # default sasl mechanism
+
+Example of authentication to a ZNC bouncer::
+
+    [core]
+    auth_method = server           # select server-based auth
+    # auth_username is not used with server authentication, so instead
+    # we combine the ZNC username, network name, and password here:
+    auth_password = Sopel/libera:SopelIsGreat!
+
+Don't forget to configure your ZNC to log in to the real network!
 
 
 Multi-stage
@@ -628,13 +647,17 @@ To ignore users based on their hosts and/or nicks, you can use these options:
 Logging
 =======
 
-Sopel's outputs are redirected to a file named ``<base>.stdio.log``, located in
-the **log directory**, which is configured by :attr:`~CoreSection.logdir`.
+Sopel writes logs of its activities to its **log directory**, which is
+configured by :attr:`~CoreSection.logdir`. Depending on the enabled options,
+there may be as many as four log files per config:
 
-The ``<base>`` prefix refers to the configuration's
-:attr:`~sopel.config.Config.basename` attribute.
+* ``<configname>.sopel.log``: standard logging output
+* ``<configname>.error.log``: errors only
+* ``<configname>.exceptions.log``: exceptions and accompanying tracebacks
+* ``<configname>.raw.log``: raw traffic between Sopel and the IRC server, if
+  enabled (see :ref:`below <Raw Logs>`)
 
-It uses the built-in :func:`logging.basicConfig` function to configure its
+Sopel uses the built-in :func:`logging.basicConfig` function to configure its
 logs with the following arguments:
 
 * ``format``: set to :attr:`~CoreSection.logging_format` if configured
@@ -652,6 +675,12 @@ Example of configuration for logging::
     logging_datefmt = %Y-%m-%d %H:%M:%S
     logdir = /path/to/logs
 
+.. _logging-basename:
+.. note::
+
+    The ``<configname>`` prefix in logging filenames refers to the
+    configuration's :attr:`~sopel.config.Config.basename` attribute.
+
 .. versionadded:: 7.0
 
    Configuration options ``logging_format`` and ``logging_datefmt`` have been
@@ -659,8 +688,9 @@ Example of configuration for logging::
 
 .. versionchanged:: 7.0
 
-   The log filename has been renamed from ``stdio.log`` to ``<base>.stdio.log``
-   to prevent conflicts when running more than one instance of Sopel.
+   The log filename has been renamed from ``stdio.log`` to
+   ``<configname>.sopel.log`` to disambiguate its purpose and prevent
+   conflicts when running more than one instance of Sopel.
 
 Log to a Channel
 ----------------
@@ -700,15 +730,13 @@ the flag :attr:`~CoreSection.log_raw` to true::
     log_raw = on
 
 In that case, IRC messages received and sent are stored into a file named
-``<base>.raw.log``, located in the log directory.
-
-The ``<base>`` prefix refers to the configuration's
-:attr:`~sopel.config.Config.basename` attribute.
+``<configname>.raw.log``, located in the log directory.
 
 .. versionchanged:: 7.0
 
-   The log filename has been renamed from ``raw.log`` to ``<base>.raw.log``
-   to prevent conflicts when running more than one instance of Sopel.
+   The log filename has been renamed from ``raw.log`` to
+   ``<configname>.raw.log`` to prevent conflicts when running more than one
+   instance of Sopel.
 
 
 Other

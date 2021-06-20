@@ -5,6 +5,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import os.path
 
 from sopel.config.types import (
+    BooleanAttribute,
     ChoiceAttribute,
     FilenameAttribute,
     ListAttribute,
@@ -172,11 +173,12 @@ class CoreSection(StaticSection):
 
     :default:
         * ``NickServ`` if using the ``nickserv`` :attr:`auth_method`
+        * ``UserServ`` if using the ``userserv`` :attr:`auth_method`
         * ``PLAIN`` if using the ``sasl`` :attr:`auth_method`
 
-    The nickname of the NickServ service, or the name of the desired SASL
-    mechanism, if :attr:`auth_method` is set to one of these methods. This value
-    is otherwise ignored.
+    The nickname of the NickServ or UserServ service, or the name of the
+    desired SASL mechanism, if :attr:`auth_method` is set to one of these
+    methods. This value is otherwise ignored.
 
     See :ref:`Authentication`.
     """
@@ -184,7 +186,10 @@ class CoreSection(StaticSection):
     auth_username = ValidatedAttribute('auth_username')
     """The user/account name to use when authenticating.
 
-    May not apply, depending on :attr:`auth_method`. See :ref:`Authentication`.
+    Required for an :attr:`auth_method` of ``authserv``, ``Q``, or
+    ``userserv`` — otherwise ignored.
+
+    See :ref:`Authentication`.
     """
 
     auto_url_schemes = ListAttribute(
@@ -647,16 +652,16 @@ class CoreSection(StaticSection):
         """
         return self._parent.homedir
 
-    host = ValidatedAttribute('host', default='chat.freenode.net')
+    host = ValidatedAttribute('host', default='irc.libera.chat')
     """The IRC server to connect to.
 
-    :default: ``chat.freenode.net``
+    :default: ``irc.libera.chat``
 
     **Required**:
 
     .. code-block:: ini
 
-        host = chat.freenode.net
+        host = irc.libera.chat
 
     """
 
@@ -685,7 +690,7 @@ class CoreSection(StaticSection):
 
     """
 
-    log_raw = ValidatedAttribute('log_raw', bool, default=False)
+    log_raw = BooleanAttribute('log_raw', default=False)
     """Whether a log of raw lines as sent and received should be kept.
 
     :default: ``no``
@@ -937,7 +942,7 @@ class CoreSection(StaticSection):
 
     """
 
-    not_configured = ValidatedAttribute('not_configured', bool, default=False)
+    not_configured = BooleanAttribute('not_configured', default=False)
     """For package maintainers. Not used in normal configurations.
 
     :default: ``False``
@@ -1035,7 +1040,7 @@ class CoreSection(StaticSection):
 
     """
 
-    reply_errors = ValidatedAttribute('reply_errors', bool, default=True)
+    reply_errors = BooleanAttribute('reply_errors', default=True)
     """Whether to reply to the sender of a message that triggered an error.
 
     :default: ``True``
@@ -1123,7 +1128,7 @@ class CoreSection(StaticSection):
     """
 
     timeout = ValidatedAttribute('timeout', int, default=120)
-    """The number of seconds acceptable between pings before timing out.
+    """The number of seconds acceptable since the last message before timing out.
 
     :default: ``120``
 
@@ -1136,7 +1141,45 @@ class CoreSection(StaticSection):
 
     """
 
-    use_ssl = ValidatedAttribute('use_ssl', bool, default=False)
+    timeout_ping_interval = ValidatedAttribute('timeout_ping_interval',
+                                               int,
+                                               default=0)
+    """The number of seconds before sending a PING command to the server.
+
+    :default: (auto)
+
+    The default value is made to send at least 2 PINGs before the bot thinks
+    there is a timeout, given that :attr:`timeout` is 120s by default:
+
+    * t+54s: first PING
+    * t+108s: second PING
+    * t+120s: if no response, then a timeout is detected
+
+    This makes the timeout detection more lenient and forgiving, by allowing a
+    12s window for the server to send something that will prevent a timeout.
+
+    You can change the PING interval like this:
+
+    .. code-block:: ini
+
+        # timeout up to 250s
+        timeout = 250
+        # PING every 80s (about 3 times every 240s + 10s window)
+        timeout_ping_interval = 80
+
+    .. note::
+
+        Internally, the default value is 0 and the value used will be
+        automatically calculated as 45% of the :attr:`timeout`::
+
+            ping_interval = timeout * 0.45
+
+        So for a timeout of 120s it's a PING every 54s. For a timeout of 250s
+        it's a PING every 112.5s.
+
+    """
+
+    use_ssl = BooleanAttribute('use_ssl', default=False)
     """Whether to use a SSL/TLS encrypted connection.
 
     :default: ``False``
@@ -1162,7 +1205,7 @@ class CoreSection(StaticSection):
 
     """
 
-    verify_ssl = ValidatedAttribute('verify_ssl', bool, default=True)
+    verify_ssl = BooleanAttribute('verify_ssl', default=True)
     """Whether to require a trusted certificate for encrypted connections.
 
     :default: ``True``

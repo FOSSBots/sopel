@@ -148,9 +148,9 @@ class PreTrigger(object):
         #             print(text)    # 'foo bar!'
         #             print(argstr)  # ':nick!ident@domain PRIVMSG #sopel'
         #             print(args)    # [':nick!ident@domain', 'PRIVMSG', '#sopel', 'foo bar!']
-        # Example 2:  line = 'irc.freenode.net MODE Sopel +i'
+        # Example 2:  line = 'irc.libera.chat MODE Sopel +i'
         #             print(text)    # '+i'
-        #             print(args)    # ['irc.freenode.net', 'MODE', 'Sopel', '+i']
+        #             print(args)    # ['irc.libera.chat', 'MODE', 'Sopel', '+i']
         if ' :' in line:
             argstr, self.text = line.split(' :', 1)
             self.args = argstr.split(' ')
@@ -232,6 +232,14 @@ class Trigger(unicode):
 
     This will be a channel name for "regular" (channel) messages, or the nick
     that sent a private message.
+
+    You can check if the trigger comes from a channel or a nick with its
+    :meth:`~sopel.tools.Identifier.is_nick` method::
+
+        if trigger.sender.is_nick():
+            # message sent from a private message
+        else:
+            # message sent from a channel
     """
     time = property(lambda self: self._pretrigger.time)
     """When the message was received.
@@ -347,13 +355,13 @@ class Trigger(unicode):
     See Python's :meth:`re.Match.groupdict` documentation for details.
     """
     args = property(lambda self: self._pretrigger.args)
-    """A tuple containing each of the arguments to an event.
+    """A list containing each of the arguments to an event.
 
-    :type: tuple
+    :type: list[str]
 
     These are the strings passed between the event name and the colon. For
     example, when setting ``mode -m`` on the channel ``#example``, args would
-    be ``('#example', '-m')``
+    be ``['#example', '-m']``
     """
     urls = property(lambda self: self._pretrigger.urls)
     """A tuple containing all URLs found in the text.

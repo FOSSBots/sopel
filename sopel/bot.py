@@ -248,18 +248,18 @@ class Sopel(irc.AbstractBot):
     def _signal_handler(self, sig, frame):
         if sig in QUIT_SIGNALS:
             if self.backend.is_connected():
-                LOGGER.warning('Got quit signal, sending QUIT to server.')
+                LOGGER.warning("Got quit signal, sending QUIT to server.")
                 self.quit('Closing')
             else:
                 self.hasquit = True  # mark the bot as "want to quit"
-                LOGGER.warning('Got quit signal.')
+                LOGGER.warning("Got quit signal.")
                 raise KeyboardInterrupt
         elif sig in RESTART_SIGNALS:
             if self.backend.is_connected():
-                LOGGER.warning('Got restart signal, sending QUIT to server.')
+                LOGGER.warning("Got restart signal, sending QUIT to server.")
                 self.restart('Restarting')
             else:
-                LOGGER.warning('Got restart signal.')
+                LOGGER.warning("Got restart signal.")
                 self.wantsrestart = True  # mark the bot as "want to restart"
                 self.hasquit = True  # mark the bot as "want to quit"
                 raise KeyboardInterrupt
@@ -310,7 +310,7 @@ class Sopel(irc.AbstractBot):
         load_error = 0
         load_disabled = 0
 
-        LOGGER.info('Loading plugins...')
+        LOGGER.info("Loading plugins...")
         usable_plugins = plugins.get_usable_plugins(self.settings)
         for name, info in usable_plugins.items():
             plugin, is_enabled = info
@@ -322,11 +322,11 @@ class Sopel(irc.AbstractBot):
                 plugin.load()
             except Exception as e:
                 load_error = load_error + 1
-                LOGGER.exception('Error loading %s: %s', name, e)
+                LOGGER.exception("Error loading %s: %s", name, e)
             except SystemExit:
                 load_error = load_error + 1
                 LOGGER.exception(
-                    'Error loading %s (plugin tried to exit)', name)
+                    "Error loading %s (plugin tried to exit)", name)
             else:
                 try:
                     if plugin.has_setup():
@@ -336,15 +336,15 @@ class Sopel(irc.AbstractBot):
                     plugin.register(self)
                 except Exception as e:
                     load_error = load_error + 1
-                    LOGGER.exception('Error in %s setup: %s', name, e)
+                    LOGGER.exception("Error in %s setup: %s", name, e)
                 else:
                     load_success = load_success + 1
-                    LOGGER.info('Plugin loaded: %s', name)
+                    LOGGER.info("Plugin loaded: %s", name)
 
         total = sum([load_success, load_error, load_disabled])
         if total and load_success:
             LOGGER.info(
-                'Registered %d plugins, %d failed, %d disabled',
+                "Registered %d plugins, %d failed, %d disabled",
                 (load_success - 1),
                 load_error,
                 load_disabled)
@@ -392,8 +392,8 @@ class Sopel(irc.AbstractBot):
             for option_name in settings.parser.options(section_name):
                 if not hasattr(section, option_name):
                     LOGGER.warning(
-                        'Config option `%s.%s` is not defined by its section '
-                        'and may not be recognized by Sopel.',
+                        "Config option `%s.%s` is not defined by its section "
+                        "and may not be recognized by Sopel.",
                         section_name,
                         option_name,
                     )
@@ -420,13 +420,13 @@ class Sopel(irc.AbstractBot):
         # tear down
         plugin.shutdown(self)
         plugin.unregister(self)
-        LOGGER.info('Unloaded plugin %s', name)
+        LOGGER.info("Unloaded plugin %s", name)
         # reload & setup
         plugin.reload()
         plugin.setup(self)
         plugin.register(self)
         meta = plugin.get_meta_description()
-        LOGGER.info('Reloaded %s plugin %s from %s',
+        LOGGER.info("Reloaded %s plugin %s from %s",
                     meta['type'], name, meta['source'])
 
     def reload_plugins(self):
@@ -441,7 +441,7 @@ class Sopel(irc.AbstractBot):
         for name, plugin in registered:
             plugin.shutdown(self)
             plugin.unregister(self)
-            LOGGER.info('Unloaded plugin %s', name)
+            LOGGER.info("Unloaded plugin %s", name)
 
         # reload & setup all plugins
         for name, plugin in registered:
@@ -449,7 +449,7 @@ class Sopel(irc.AbstractBot):
             plugin.setup(self)
             plugin.register(self)
             meta = plugin.get_meta_description()
-            LOGGER.info('Reloaded %s plugin %s from %s',
+            LOGGER.info("Reloaded %s plugin %s from %s",
                         meta['type'], name, meta['source'])
 
     def add_plugin(self, plugin, callables, jobs, shutdowns, urls):
@@ -592,25 +592,59 @@ class Sopel(irc.AbstractBot):
 
         for callbl in callables:
             rules = getattr(callbl, 'rule', [])
+            lazy_rules = getattr(callbl, 'rule_lazy_loaders', [])
             find_rules = getattr(callbl, 'find_rules', [])
+            lazy_find_rules = getattr(callbl, 'find_rules_lazy_loaders', [])
             search_rules = getattr(callbl, 'search_rules', [])
+            lazy_search_rules = getattr(callbl, 'search_rules_lazy_loaders', [])
             commands = getattr(callbl, 'commands', [])
             nick_commands = getattr(callbl, 'nickname_commands', [])
             action_commands = getattr(callbl, 'action_commands', [])
-            is_rule = any([rules, find_rules, search_rules])
+            is_rule = any([
+                rules,
+                lazy_rules,
+                find_rules,
+                lazy_find_rules,
+                search_rules,
+                lazy_search_rules,
+            ])
             is_command = any([commands, nick_commands, action_commands])
 
             if rules:
                 rule = plugin_rules.Rule.from_callable(settings, callbl)
                 self._rules_manager.register(rule)
 
+            if lazy_rules:
+                try:
+                    rule = plugin_rules.Rule.from_callable_lazy(
+                        settings, callbl)
+                    self._rules_manager.register(rule)
+                except plugins.exceptions.PluginError as err:
+                    LOGGER.error('Cannot register rule: %s', err)
+
             if find_rules:
                 rule = plugin_rules.FindRule.from_callable(settings, callbl)
                 self._rules_manager.register(rule)
 
+            if lazy_find_rules:
+                try:
+                    rule = plugin_rules.FindRule.from_callable_lazy(
+                        settings, callbl)
+                    self._rules_manager.register(rule)
+                except plugins.exceptions.PluginError as err:
+                    LOGGER.error('Cannot register find rule: %s', err)
+
             if search_rules:
                 rule = plugin_rules.SearchRule.from_callable(settings, callbl)
                 self._rules_manager.register(rule)
+
+            if lazy_search_rules:
+                try:
+                    rule = plugin_rules.SearchRule.from_callable_lazy(
+                        settings, callbl)
+                    self._rules_manager.register(rule)
+                except plugins.exceptions.PluginError as err:
+                    LOGGER.error('Cannot register search rule: %s', err)
 
             if commands:
                 rule = plugin_rules.Command.from_callable(settings, callbl)
@@ -668,7 +702,7 @@ class Sopel(irc.AbstractBot):
                         self.settings, func)
                     self._rules_manager.register_url_callback(rule)
                 except plugins.exceptions.PluginError as err:
-                    LOGGER.error('Cannot register URL callback: %s', err)
+                    LOGGER.error("Cannot register URL callback: %s", err)
 
     @deprecated(
         reason="Replaced by `say` method.",
@@ -1020,39 +1054,45 @@ class Sopel(irc.AbstractBot):
 
     def _shutdown(self):
         """Internal bot shutdown method."""
-        LOGGER.info('Shutting down')
+        LOGGER.info("Shutting down")
         # Stop Job Scheduler
-        LOGGER.info('Stopping the Job Scheduler.')
+        LOGGER.info("Stopping the Job Scheduler.")
         self._scheduler.stop()
 
         try:
             self._scheduler.join(timeout=15)
         except RuntimeError:
-            LOGGER.exception('Unable to stop the Job Scheduler.')
+            LOGGER.exception("Unable to stop the Job Scheduler.")
         else:
-            LOGGER.info('Job Scheduler stopped.')
+            LOGGER.info("Job Scheduler stopped.")
 
         self._scheduler.clear_jobs()
 
         # Shutdown plugins
         LOGGER.info(
-            'Calling shutdown for %d plugins.', len(self.shutdown_methods))
+            "Calling shutdown for %d plugins.", len(self.shutdown_methods))
 
         for shutdown_method in self.shutdown_methods:
             try:
                 LOGGER.debug(
-                    'Calling %s.%s',
+                    "Calling %s.%s",
                     shutdown_method.__module__,
                     shutdown_method.__name__)
                 shutdown_method(self)
             except Exception as e:
-                LOGGER.exception('Error calling shutdown method: %s', e)
+                LOGGER.exception("Error calling shutdown method: %s", e)
 
         # Avoid calling shutdown methods if we already have.
         self.shutdown_methods = []
 
     # URL callbacks management
 
+    @deprecated(
+        reason='Issues with @url decorator have been fixed. Simply use that.',
+        version='7.1',
+        warning_in='8.0',
+        removed_in='9.0',
+    )
     def register_url_callback(self, pattern, callback):
         """Register a ``callback`` for URLs matching the regex ``pattern``.
 
@@ -1079,6 +1119,12 @@ class Sopel(irc.AbstractBot):
 
         It's recommended you completely avoid manual management of URL
         callbacks through the use of :func:`sopel.plugin.url`.
+
+        .. deprecated:: 7.1
+
+            Made obsolete by fixes to the behavior of
+            :func:`sopel.plugin.url`. Will be removed in Sopel 9.
+
         """
         if 'url_callbacks' not in self.memory:
             self.memory['url_callbacks'] = tools.SopelMemory()
@@ -1091,6 +1137,12 @@ class Sopel(irc.AbstractBot):
         setattr(callback, '_sopel_url_callbacks_checked', True)
         self.memory['url_callbacks'][pattern] = callback
 
+    @deprecated(
+        reason='Issues with @url decorator have been fixed. Simply use that.',
+        version='7.1',
+        warning_in='8.0',
+        removed_in='9.0',
+    )
     def unregister_url_callback(self, pattern, callback):
         """Unregister the callback for URLs matching the regex ``pattern``.
 
@@ -1117,6 +1169,12 @@ class Sopel(irc.AbstractBot):
 
         It's recommended you completely avoid manual management of URL
         callbacks through the use of :func:`sopel.plugin.url`.
+
+        .. deprecated:: 7.1
+
+            Made obsolete by fixes to the behavior of
+            :func:`sopel.plugin.url`. Will be removed in Sopel 9.
+
         """
         if 'url_callbacks' not in self.memory:
             # nothing to unregister
@@ -1209,25 +1267,32 @@ class SopelWrapper(object):
     def __setattr__(self, attr, value):
         return setattr(self._bot, attr, value)
 
-    def say(self, message, destination=None, max_messages=1, trailing=''):
+    def say(self, message, destination=None, max_messages=1, truncation='', trailing=''):
         """Override ``Sopel.say`` to use trigger source by default.
 
         :param str message: message to say
         :param str destination: channel or nickname; defaults to
             :attr:`trigger.sender <sopel.trigger.Trigger.sender>`
-        :param int max_messages: split ``text`` into at most this many messages
-                                 if it is too long to fit in one (optional)
+        :param int max_messages: split ``message`` into at most this many
+                                 messages if it is too long to fit into one
+                                 line (optional)
+        :param str truncation: string to indicate that the ``message`` was
+                               truncated (optional)
+        :param str trailing: string that should always appear at the end of
+                             ``message`` (optional)
 
         The ``destination`` will default to the channel in which the
         trigger happened (or nickname, if received in a private message).
 
         .. seealso::
 
-            :meth:`sopel.bot.Sopel.say`
+            For more details about the optional arguments to this wrapper
+            method, consult the documentation for :meth:`sopel.bot.Sopel.say`.
+
         """
         if destination is None:
             destination = self._trigger.sender
-        self._bot.say(self._out_pfx + message, destination, max_messages, trailing)
+        self._bot.say(self._out_pfx + message, destination, max_messages, truncation, trailing)
 
     def action(self, message, destination=None):
         """Override ``Sopel.action`` to use trigger source by default.
