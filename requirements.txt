@@ -8,4 +8,4 @@ requests>=2.0.0,<3.0.0
 # 2.0 will drop EOL Python 2.7 & 3.5, just like Sopel 8 plans to
 urllib3>=1.26.4,<1.27
 dnspython<3.0
-sqlalchemy<1.4
+sqlalchemy<1.5
