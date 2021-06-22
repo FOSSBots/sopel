@@ -10,5 +10,5 @@ sphinx
 # already demonstrated a willingness to make major changes in patch versions
 sphinxcontrib-autoprogram<=0.1.7
 vcrpy<3.0.0
-build==0.3.1.post1
+build==0.5.0
 pipdeptree==2.0.0
