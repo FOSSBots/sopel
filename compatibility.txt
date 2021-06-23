@@ -1,20 +1,20 @@
 sopel-help==0.2.0
 sopel-modules.quotes==1.2.1
 sopel-modules.twitter==0.3.2
-sopel-modules.weather==1.2.2
+sopel-modules.weather==1.3.1
 sopel-modules.youtube==0.4.0
 sopel-modules.stocks==1.1.3
 sopel-modules.chanlogs==0.2.1
-sopel-modules.github==0.4.1
+sopel-modules.github==0.4.2
 emoji==1.2.0
 sopel-modules.wolfram==0.5.0
-sopel-modules.urban==1.1.0
+sopel-modules.urban==1.2.1
 sopel-dns==0.3.1
 pipdeptree==2.0.0
-MirahezeBot-Plugins==9.1.2
-sopel-plugins.adminlist==1.0.5
-sopel-plugins.channelmgnt==2.0.1
-sopel-plugins.joinall==1.0.2
-sopel-plugins.pingpong==1.0.4
+MirahezeBot-Plugins==9.1.3
+sopel-plugins.adminlist==1.0.7
+sopel-plugins.channelmgnt==2.1.1
+sopel-plugins.joinall==1.0.4
+sopel-plugins.pingpong==1.0.5
 rsa>=4.7 # not directly required, pinned by Snyk to avoid a vulnerability
-urllib3==1.26.4 # pinned to avoid sec issue
+urllib3==1.26.5 # pinned to avoid sec issue
