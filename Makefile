@@ -7,15 +7,15 @@ quality:
 
 .PHONY: test test_norecord test_novcr vcr_rerecord
 test:
-	coverage run -m py.test -v .
+	pytest
 
 test_norecord:
 	# error if VCR recording for a web request is missing (useful on CI)
-	coverage run -m py.test -v . --vcr-record=none
+	pytest
 
 test_novcr:
 	# disable VCR completely; useful to check if recordings are outdated
-	coverage run -m py.test -v . --disable-vcr
+	pytest
 
 vcr_rerecord:
 	# clear VCR cassettes and run tests to record fresh ones

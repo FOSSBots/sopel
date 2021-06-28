@@ -1,10 +1,7 @@
 name: 'Compatibility Checks'
 on:
   push:
-    branches:
-      - dev
-      - release
-  pull_request_target:
+  pull_request:
 
 jobs:
   check:
@@ -12,7 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python: ['3.6', '3.7', '3.8', '3.8-dev', '3.9', '3.9-dev', '3.10-dev']
+        python: ['3.7', '3.8', '3.9', '3.9-dev', '3.10-dev']
         os: ['ubuntu-latest', 'macos-latest']
     steps:
       - name: Cancel Previous Runs
