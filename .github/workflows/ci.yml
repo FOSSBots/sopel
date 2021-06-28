@@ -31,4 +31,4 @@ jobs:
       - name: Install test package
         run: python setup.py develop
       - name: Run pytest
-        run: make test_norecord
+        run: pytest
