@@ -5,7 +5,7 @@ flake8-future-import<0.4.6
 flake8-import-order<=1.18.1
 pytest>=4.6,<4.7
 pytest-vcr==1.0.2
-requests-mock==1.9.1
+requests-mock==1.9.3
 sphinx
 # further constrain autoprogram version because the new (in 2021) maintainer
 # already demonstrated a willingness to make major changes in patch versions
