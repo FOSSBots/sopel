@@ -310,8 +310,11 @@ def startup(bot, trigger):
 @plugin.priority('medium')
 def handle_isupport(bot, trigger):
     """Handle ``RPL_ISUPPORT`` events."""
-    # remember if NAMESX is known to be supported, before parsing RPL_ISUPPORT
+    # remember if certain actionable tokens are known to be supported,
+    # before parsing RPL_ISUPPORT
+    botmode_support = 'BOT' in bot.isupport
     namesx_support = 'NAMESX' in bot.isupport
+    uhnames_support = 'UHNAMES' in bot.isupport
 
     # parse ISUPPORT message from server
     parameters = {}
@@ -325,6 +328,12 @@ def handle_isupport(bot, trigger):
 
     bot._isupport = bot._isupport.apply(**parameters)
 
+    # was BOT mode support status updated?
+    if not botmode_support and 'BOT' in bot.isupport:
+        # yes it was! set our mode unless the config overrides it
+        botmode = bot.isupport['BOT']
+        if botmode not in bot.config.core.modes:
+            bot.write(('MODE', bot.nick, '+' + botmode))
     # was NAMESX support status updated?
     if not namesx_support and 'NAMESX' in bot.isupport:
         # yes it was!
@@ -332,6 +341,13 @@ def handle_isupport(bot, trigger):
             # and the server doesn't have the multi-prefix capability
             # so we can ask the server to use the NAMESX feature
             bot.write(('PROTOCTL', 'NAMESX'))
+    # was UHNAMES support status updated?
+    if not uhnames_support and 'UHNAMES' in bot.isupport:
+        # yes it was!
+        if 'userhost-in-names' not in bot.server_capabilities:
+            # and the server doesn't have the userhost-in-names capability
+            # so we should ask for UHNAMES instead
+            bot.write(('PROTOCTL', 'UHNAMES'))
 
 
 @module.event(events.RPL_MYINFO)
@@ -423,8 +439,6 @@ def handle_names(bot, trigger):
 
     This function keeps track of users' privileges when Sopel joins channels.
     """
-    names = trigger.split()
-
     # TODO specific to one channel type. See issue 281.
     channels = re.search(r'(#\S*)', trigger.raw)
     if not channels:
@@ -448,20 +462,31 @@ def handle_names(bot, trigger):
         "!": module.OPER,
     }
 
+    uhnames = 'UHNAMES' in bot.isupport
+    userhost_in_names = 'userhost-in-names' in bot.enabled_capabilities
+
+    names = trigger.split()
     for name in names:
+        if uhnames or userhost_in_names:
+            name, mask = name.rsplit('!', 1)
+            username, hostname = mask.split('@', 1)
+        else:
+            username = hostname = None
+
         priv = 0
         for prefix, value in mapping.items():
             if prefix in name:
                 priv = priv | value
+
         nick = Identifier(name.lstrip(''.join(mapping.keys())))
         bot.privileges[channel][nick] = priv
         user = bot.users.get(nick)
         if user is None:
-            # It's not possible to set the username/hostname from info received
-            # in a NAMES reply, unfortunately.
+            # The username/hostname will be included in a NAMES reply only if
+            # userhost-in-names is available. We can use them if present.
             # Fortunately, the user should already exist in bot.users by the
             # time this code runs, so this is 99.9% ass-covering.
-            user = target.User(nick, None, None)
+            user = target.User(nick, username, hostname)
             bot.users[nick] = user
         bot.channels[channel].add_user(user, privs=priv)
 
@@ -913,6 +938,7 @@ def receive_cap_ls_reply(bot, trigger):
         'away-notify',
         'cap-notify',
         'server-time',
+        'userhost-in-names',
     ]
     for cap in core_caps:
         if cap not in bot._cap_reqs:
@@ -970,7 +996,6 @@ def receive_cap_ack_sasl(bot):
     if not password:
         return
 
-    mech = mech or 'PLAIN'
     available_mechs = bot.server_capabilities.get('sasl', '')
     available_mechs = available_mechs.split(',') if available_mechs else []
 
@@ -1038,10 +1063,23 @@ def auth_proceed(bot, trigger):
         be ignored. If none is set, then this function does nothing.
 
     """
-    if trigger.args[0] != '+':
-        # How did we get here? I am not good with computer.
+    if bot.config.core.auth_method == 'sasl':
+        mech = bot.config.core.auth_target or 'PLAIN'
+    elif bot.config.core.server_auth_method == 'sasl':
+        mech = bot.config.core.server_auth_sasl_mech or 'PLAIN'
+    else:
         return
-    # Is this right?
+
+    if mech == 'EXTERNAL':
+        if trigger.args[0] != '+':
+            # not an expected response from the server; abort SASL
+            token = '*'
+        else:
+            token = '+'
+
+        bot.write(('AUTHENTICATE', token))
+        return
+
     if bot.config.core.auth_method == 'sasl':
         sasl_username = bot.config.core.auth_username
         sasl_password = bot.config.core.auth_password
@@ -1049,11 +1087,22 @@ def auth_proceed(bot, trigger):
         sasl_username = bot.config.core.server_auth_username
         sasl_password = bot.config.core.server_auth_password
     else:
+        # How did we get here? I am not good with computer
         return
+
     sasl_username = sasl_username or bot.nick
-    sasl_token = _make_sasl_plain_token(sasl_username, sasl_password)
-    LOGGER.info("Sending SASL Auth token.")
-    send_authenticate(bot, sasl_token)
+
+    if mech == 'PLAIN':
+        if trigger.args[0] != '+':
+            # not an expected response from the server; abort SASL
+            token = '*'
+        else:
+            sasl_token = _make_sasl_plain_token(sasl_username, sasl_password)
+            LOGGER.info("Sending SASL Auth token.")
+            send_authenticate(bot, sasl_token)
+        return
+
+    # TODO: Implement SCRAM challenges
 
 
 def _make_sasl_plain_token(account, password):
@@ -1140,12 +1189,16 @@ def sasl_mechs(bot, trigger):
 def _get_sasl_pass_and_mech(bot):
     password = None
     mech = None
+
     if bot.config.core.auth_method == 'sasl':
         password = bot.config.core.auth_password
         mech = bot.config.core.auth_target
     elif bot.config.core.server_auth_method == 'sasl':
         password = bot.config.core.server_auth_password
         mech = bot.config.core.server_auth_sasl_mech
+
+    mech = 'PLAIN' if mech is None else mech.upper()
+
     return password, mech
 
 

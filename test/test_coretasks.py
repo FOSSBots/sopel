@@ -306,6 +306,51 @@ def test_handle_isupport(mockbot):
     assert 'CNOTICE' in mockbot.isupport
 
 
+@pytest.mark.parametrize('modes', ['', 'Rw'])
+def test_handle_isupport_bot_mode(mockbot, modes):
+    mockbot.config.core.modes = modes
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'SAFELIST ELIST=CTU CPRIVMSG CNOTICE '
+        ':are supported by this server')
+
+    assert 'BOT' not in mockbot.isupport
+    assert mockbot.backend.message_sent == []
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'BOT=B '
+        ':are supported by this server')
+
+    assert 'BOT' in mockbot.isupport
+    assert mockbot.isupport['BOT'] == 'B'
+    assert mockbot.backend.message_sent == rawlist('MODE TestBot +B')
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'BOT=B '
+        ':are supported by this server')
+
+    assert len(mockbot.backend.message_sent) == 1, 'No need to resend!'
+
+
+@pytest.mark.parametrize('modes', ['B', 'RBw'])
+def test_handle_isupport_bot_mode_override(mockbot, modes):
+    mockbot.config.core.modes = modes
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'BOT=B '
+        ':are supported by this server')
+
+    assert 'BOT' in mockbot.isupport
+    assert mockbot.isupport['BOT'] == 'B'
+    assert mockbot.backend.message_sent == [], (
+        'Bot should not set mode overridden by config setting'
+    )
+
+
 def test_handle_isupport_namesx(mockbot):
     mockbot.on_message(
         ':irc.example.com 005 Sopel '
@@ -327,6 +372,32 @@ def test_handle_isupport_namesx(mockbot):
     mockbot.on_message(
         ':irc.example.com 005 Sopel '
         'NAMESX '
+        ':are supported by this server')
+
+    assert len(mockbot.backend.message_sent) == 1, 'No need to resend!'
+
+
+def test_handle_isupport_uhnames(mockbot):
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'SAFELIST ELIST=CTU CPRIVMSG CNOTICE '
+        ':are supported by this server')
+
+    assert 'UHNAMES' not in mockbot.isupport
+    assert mockbot.backend.message_sent == []
+    assert 'userhost-in-names' not in mockbot.server_capabilities
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'UHNAMES '
+        ':are supported by this server')
+
+    assert 'UHNAMES' in mockbot.isupport
+    assert mockbot.backend.message_sent == rawlist('PROTOCTL UHNAMES')
+
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'UHNAMES '
         ':are supported by this server')
 
     assert len(mockbot.backend.message_sent) == 1, 'No need to resend!'
