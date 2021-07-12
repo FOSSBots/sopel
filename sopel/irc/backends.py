@@ -89,7 +89,7 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         AbstractIRCBackend.__init__(self, bot)
         asynchat.async_chat.__init__(self)
         self.writing_lock = threading.RLock()
-        self.set_terminator(b'\n')
+        self.set_terminator(b'\r\n')
         self.buffer = ''
         self.server_timeout = server_timeout or 120
         self.ping_interval = ping_interval or (self.server_timeout * 0.45)
@@ -196,6 +196,8 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         The incoming line is discarded (and thus ignored) if guessing the text
         encoding and decoding it fails.
         """
+        data += self.get_terminator()
+
         # We can't trust clients to pass valid Unicode.
         try:
             data = str(data, encoding='utf-8')
@@ -208,8 +210,13 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
                 try:
                     data = str(data, encoding='iso8859-1')
                 except UnicodeDecodeError:
-                    # Discard line if encoding is unknown
+                    self.bot.log_raw(data, '<<!')
+                    LOGGER.warning(
+                        "Couldn't guess character encoding of message, ignoring: %r",
+                        data,
+                    )
                     return
+
         if data:
             self.bot.log_raw(data, '<<')
         self.buffer += data
@@ -218,8 +225,6 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
     def found_terminator(self):
         """Handle the end of an incoming message."""
         line = self.buffer
-        if line.endswith('\r'):
-            line = line[:-1]
         self.buffer = ''
         self.bot.on_message(line)
 
@@ -243,12 +248,17 @@ class SSLAsynchatBackend(AsynchatBackend):
                             (default ``True``, for good reason)
     :param str ca_certs: filesystem path to a CA Certs file containing trusted
                          root certificates
+    :param str certfile: filesystem path to a certificate for SSL/TLS client
+                         authentication (CertFP)
+    :param str keyfile: filesystem path to the private key for ``certfile``
     """
-    def __init__(self, bot, verify_ssl=True, ca_certs=None, **kwargs):
+    def __init__(self, bot, verify_ssl=True, ca_certs=None, certfile=None, keyfile=None, **kwargs):
         AsynchatBackend.__init__(self, bot, **kwargs)
         self.verify_ssl = verify_ssl
         self.ssl = None
         self.ca_certs = ca_certs
+        self.certfile = certfile
+        self.keyfile = keyfile
 
     def handle_connect(self):
         """Handle potential TLS connection."""
@@ -261,10 +271,14 @@ class SSLAsynchatBackend(AsynchatBackend):
         # version(s) it supports.
         if not self.verify_ssl:
             self.ssl = ssl.wrap_socket(self.socket,  # lgtm [py/insecure-default-protocol]
+                                       certfile=self.certfile,
+                                       keyfile=self.keyfile,
                                        do_handshake_on_connect=True,
                                        suppress_ragged_eofs=True)
         else:
             self.ssl = ssl.wrap_socket(self.socket,  # lgtm [py/insecure-default-protocol]
+                                       certfile=self.certfile,
+                                       keyfile=self.keyfile,
                                        do_handshake_on_connect=True,
                                        suppress_ragged_eofs=True,
                                        cert_reqs=ssl.CERT_REQUIRED,

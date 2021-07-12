@@ -30,7 +30,7 @@ import logging
 import re
 import time
 
-from sopel import loader, module, plugin
+from sopel import loader, plugin
 from sopel.config import ConfigurationError
 from sopel.irc import isupport
 from sopel.irc.utils import CapReq, MyInfo
@@ -60,7 +60,7 @@ def setup(bot):
     if bot.settings.core.throttle_join:
         wait_interval = max(bot.settings.core.throttle_wait, 1)
 
-        @module.interval(wait_interval)
+        @plugin.interval(wait_interval)
         @plugin.label('throttle_join')
         def processing_job(bot):
             _join_event_processing(bot)
@@ -201,9 +201,9 @@ def on_nickname_in_use(bot, trigger):
     bot.change_current_nick(bot.nick + '_')
 
 
-@module.require_privmsg("This command only works as a private message.")
-@module.require_admin("This command requires admin privileges.")
-@module.commands('execute')
+@plugin.require_privmsg("This command only works as a private message.")
+@plugin.require_admin("This command requires admin privileges.")
+@plugin.commands('execute')
 def execute_perform(bot, trigger):
     """Execute commands specified to perform on IRC server connect.
 
@@ -213,9 +213,9 @@ def execute_perform(bot, trigger):
     _execute_perform(bot)
 
 
-@module.event(events.RPL_WELCOME, events.RPL_LUSERCLIENT)
-@module.thread(False)
-@module.unblockable
+@plugin.event(events.RPL_WELCOME, events.RPL_LUSERCLIENT)
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def startup(bot, trigger):
     """Do tasks related to connecting to the network.
@@ -303,15 +303,18 @@ def startup(bot, trigger):
     _execute_perform(bot)
 
 
-@module.event(events.RPL_ISUPPORT)
-@module.thread(False)
-@module.unblockable
-@module.rule('are supported by this server')
+@plugin.event(events.RPL_ISUPPORT)
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.rule('are supported by this server')
 @plugin.priority('medium')
 def handle_isupport(bot, trigger):
     """Handle ``RPL_ISUPPORT`` events."""
-    # remember if NAMESX is known to be supported, before parsing RPL_ISUPPORT
+    # remember if certain actionable tokens are known to be supported,
+    # before parsing RPL_ISUPPORT
+    botmode_support = 'BOT' in bot.isupport
     namesx_support = 'NAMESX' in bot.isupport
+    uhnames_support = 'UHNAMES' in bot.isupport
 
     # parse ISUPPORT message from server
     parameters = {}
@@ -325,6 +328,12 @@ def handle_isupport(bot, trigger):
 
     bot._isupport = bot._isupport.apply(**parameters)
 
+    # was BOT mode support status updated?
+    if not botmode_support and 'BOT' in bot.isupport:
+        # yes it was! set our mode unless the config overrides it
+        botmode = bot.isupport['BOT']
+        if botmode not in bot.config.core.modes:
+            bot.write(('MODE', bot.nick, '+' + botmode))
     # was NAMESX support status updated?
     if not namesx_support and 'NAMESX' in bot.isupport:
         # yes it was!
@@ -332,11 +341,18 @@ def handle_isupport(bot, trigger):
             # and the server doesn't have the multi-prefix capability
             # so we can ask the server to use the NAMESX feature
             bot.write(('PROTOCTL', 'NAMESX'))
+    # was UHNAMES support status updated?
+    if not uhnames_support and 'UHNAMES' in bot.isupport:
+        # yes it was!
+        if 'userhost-in-names' not in bot.server_capabilities:
+            # and the server doesn't have the userhost-in-names capability
+            # so we should ask for UHNAMES instead
+            bot.write(('PROTOCTL', 'UHNAMES'))
 
 
-@module.event(events.RPL_MYINFO)
-@module.thread(False)
-@module.unblockable
+@plugin.event(events.RPL_MYINFO)
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def parse_reply_myinfo(bot, trigger):
     """Handle ``RPL_MYINFO`` events."""
@@ -352,9 +368,9 @@ def parse_reply_myinfo(bot, trigger):
     )
 
 
-@module.require_privmsg()
-@module.require_owner()
-@module.commands('useserviceauth')
+@plugin.require_privmsg()
+@plugin.require_owner()
+@plugin.commands('useserviceauth')
 def enable_service_auth(bot, trigger):
     """Set owner's account from an authenticated owner.
 
@@ -385,7 +401,7 @@ def enable_service_auth(bot, trigger):
     )
 
 
-@module.event(events.ERR_NOCHANMODES)
+@plugin.event(events.ERR_NOCHANMODES)
 @plugin.priority('medium')
 def retry_join(bot, trigger):
     """Give NickServ enough time to identify on a +R channel.
@@ -413,25 +429,21 @@ def retry_join(bot, trigger):
     bot.join(channel)
 
 
-@module.rule('(.*)')
-@module.event(events.RPL_NAMREPLY)
-@module.thread(False)
-@module.unblockable
+@plugin.rule('(.*)')
+@plugin.event(events.RPL_NAMREPLY)
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def handle_names(bot, trigger):
     """Handle NAMES responses.
 
     This function keeps track of users' privileges when Sopel joins channels.
     """
-    names = trigger.split()
-
     # TODO specific to one channel type. See issue 281.
     channels = re.search(r'(#\S*)', trigger.raw)
     if not channels:
         return
     channel = Identifier(channels.group(1))
-    if channel not in bot.privileges:
-        bot.privileges[channel] = {}
     if channel not in bot.channels:
         bot.channels[channel] = target.Channel(channel)
 
@@ -440,46 +452,56 @@ def handle_names(bot, trigger):
     # If this ever needs to be updated, remember to change the mode handling in
     # the WHO-handler functions below, too.
     mapping = {
-        "+": module.VOICE,
-        "%": module.HALFOP,
-        "@": module.OP,
-        "&": module.ADMIN,
-        "~": module.OWNER,
-        "!": module.OPER,
+        "+": plugin.VOICE,
+        "%": plugin.HALFOP,
+        "@": plugin.OP,
+        "&": plugin.ADMIN,
+        "~": plugin.OWNER,
+        "!": plugin.OPER,
     }
 
+    uhnames = 'UHNAMES' in bot.isupport
+    userhost_in_names = 'userhost-in-names' in bot.enabled_capabilities
+
+    names = trigger.split()
     for name in names:
+        if uhnames or userhost_in_names:
+            name, mask = name.rsplit('!', 1)
+            username, hostname = mask.split('@', 1)
+        else:
+            username = hostname = None
+
         priv = 0
         for prefix, value in mapping.items():
             if prefix in name:
                 priv = priv | value
+
         nick = Identifier(name.lstrip(''.join(mapping.keys())))
-        bot.privileges[channel][nick] = priv
         user = bot.users.get(nick)
         if user is None:
-            # It's not possible to set the username/hostname from info received
-            # in a NAMES reply, unfortunately.
+            # The username/hostname will be included in a NAMES reply only if
+            # userhost-in-names is available. We can use them if present.
             # Fortunately, the user should already exist in bot.users by the
             # time this code runs, so this is 99.9% ass-covering.
-            user = target.User(nick, None, None)
+            user = target.User(nick, username, hostname)
             bot.users[nick] = user
         bot.channels[channel].add_user(user, privs=priv)
 
 
-@module.rule('(.*)')
-@module.event('MODE')
-@module.thread(False)
-@module.unblockable
+@plugin.rule('(.*)')
+@plugin.event('MODE')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_modes(bot, trigger):
     """Track changes from received MODE commands."""
     _parse_modes(bot, trigger.args)
 
 
-@module.priority('high')
-@module.event(events.RPL_CHANNELMODEIS)
-@module.thread(False)
-@module.unblockable
+@plugin.priority('high')
+@plugin.event(events.RPL_CHANNELMODEIS)
+@plugin.thread(False)
+@plugin.unblockable
 def initial_modes(bot, trigger):
     """Populate channel modes from response to MODE request sent after JOIN."""
     _parse_modes(bot, trigger.args[1:], clear=True)
@@ -509,13 +531,13 @@ def _parse_modes(bot, args, clear=False):
     params = args[2:]
 
     mapping = {
-        "v": module.VOICE,
-        "h": module.HALFOP,
-        "o": module.OP,
-        "a": module.ADMIN,
-        "q": module.OWNER,
-        "y": module.OPER,
-        "Y": module.OPER,
+        "v": plugin.VOICE,
+        "h": plugin.HALFOP,
+        "o": plugin.OP,
+        "a": plugin.ADMIN,
+        "q": plugin.OWNER,
+        "y": plugin.OPER,
+        "Y": plugin.OPER,
     }
 
     modes = {}
@@ -568,31 +590,12 @@ def _parse_modes(bot, args, clear=False):
             # User privs modes, always have a param
             nick = Identifier(params[param_idx])
             priv = channel.privileges.get(nick, 0)
-            # Log a warning if the two privilege-tracking data structures
-            # get out of sync. That should never happen.
-            # This is a good place to verify that bot.channels is doing
-            # what it's supposed to do before ultimately removing the old,
-            # deprecated bot.privileges structure completely.
-            ppriv = bot.privileges[channel_name].get(nick, 0)
-            if priv != ppriv:
-                LOGGER.warning(
-                    (
-                        "Privilege data error! Please share Sopel's "
-                        "raw log with the developers, if enabled. "
-                        "(Expected %s == %s for %r in %r)"
-                    ),
-                    priv,
-                    ppriv,
-                    nick,
-                    channel,
-                )
             value = mapping.get(char)
             if value is not None:
                 if sign == "+":
                     priv = priv | value
                 else:
                     priv = priv & ~value
-                bot.privileges[channel_name][nick] = priv
                 channel.privileges[nick] = priv
             param_idx += 1
         else:
@@ -618,16 +621,16 @@ def _parse_modes(bot, args, clear=False):
     LOGGER.debug("Channel %r mode: %r", str(channel.name), channel.modes)
 
 
-@module.event('NICK')
-@module.thread(False)
-@module.unblockable
+@plugin.event('NICK')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_nicks(bot, trigger):
     """Track nickname changes and maintain our chanops list accordingly."""
     old = trigger.nick
     new = Identifier(trigger)
 
-    # Give debug mssage, and PM the owner, if the bot's own nick changes.
+    # Give debug message, and PM the owner, if the bot's own nick changes.
     if old == bot.nick and new != bot.nick:
         privmsg = (
             "Hi, I'm your bot, %s. Something has made my nick change. This "
@@ -644,12 +647,6 @@ def track_nicks(bot, trigger):
         bot.say(privmsg, bot.config.core.owner)
         return
 
-    for channel in bot.privileges:
-        channel = Identifier(channel)
-        if old in bot.privileges[channel]:
-            value = bot.privileges[channel].pop(old)
-            bot.privileges[channel][new] = value
-
     for channel in bot.channels.values():
         channel.rename_user(old, new)
     if old in bot.users:
@@ -658,10 +655,10 @@ def track_nicks(bot, trigger):
     LOGGER.info("User named %r is now known as %r.", old, str(new))
 
 
-@module.rule('(.*)')
-@module.event('PART')
-@module.thread(False)
-@module.unblockable
+@plugin.rule('(.*)')
+@plugin.event('PART')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_part(bot, trigger):
     """Track users leaving channels."""
@@ -671,9 +668,9 @@ def track_part(bot, trigger):
     LOGGER.info("User %r left a channel: %s", str(nick), channel)
 
 
-@module.event('KICK')
-@module.thread(False)
-@module.unblockable
+@plugin.event('KICK')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_kick(bot, trigger):
     """Track users kicked from channels."""
@@ -690,7 +687,6 @@ def track_kick(bot, trigger):
 
 def _remove_from_channel(bot, nick, channel):
     if nick == bot.nick:
-        bot.privileges.pop(channel, None)
         bot.channels.pop(channel, None)
 
         lost_users = []
@@ -701,8 +697,6 @@ def _remove_from_channel(bot, nick, channel):
         for nick_ in lost_users:
             bot.users.pop(nick_, None)
     else:
-        bot.privileges[channel].pop(nick, None)
-
         user = bot.users.get(nick)
         if user and channel in user.channels:
             bot.channels[channel].clear_user(nick)
@@ -726,7 +720,7 @@ def _send_who(bot, channel):
     bot.channels[Identifier(channel)].last_who = datetime.datetime.utcnow()
 
 
-@module.interval(30)
+@plugin.interval(30)
 def _periodic_send_who(bot):
     """Periodically send a WHO request to keep user information up-to-date."""
     if 'away-notify' in bot.enabled_capabilities:
@@ -754,9 +748,9 @@ def _periodic_send_who(bot):
         _send_who(bot, selected_channel)
 
 
-@module.event('JOIN')
-@module.thread(False)
-@module.unblockable
+@plugin.event('JOIN')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_join(bot, trigger):
     """Track users joining channels.
@@ -768,7 +762,6 @@ def track_join(bot, trigger):
 
     # is it a new channel?
     if channel not in bot.channels:
-        bot.privileges[channel] = {}
         bot.channels[channel] = target.Channel(channel)
 
     # did *we* just join?
@@ -787,8 +780,6 @@ def track_join(bot, trigger):
             str(channel), trigger.nick)
 
     # set initial values
-    bot.privileges[channel][trigger.nick] = 0
-
     user = bot.users.get(trigger.nick)
     if user is None:
         user = target.User(trigger.nick, trigger.user, trigger.host)
@@ -801,14 +792,12 @@ def track_join(bot, trigger):
         user.account = trigger.args[1]
 
 
-@module.event('QUIT')
-@module.thread(False)
-@module.unblockable
+@plugin.event('QUIT')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_quit(bot, trigger):
     """Track when users quit channels."""
-    for chanprivs in bot.privileges.values():
-        chanprivs.pop(trigger.nick, None)
     for channel in bot.channels.values():
         channel.clear_user(trigger.nick)
     bot.users.pop(trigger.nick, None)
@@ -821,9 +810,9 @@ def track_quit(bot, trigger):
         auth_after_register(bot)
 
 
-@module.event('CAP')
-@module.thread(False)
-@module.unblockable
+@plugin.event('CAP')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def receive_cap_list(bot, trigger):
     """Handle client capability negotiation."""
@@ -911,8 +900,10 @@ def receive_cap_ls_reply(bot, trigger):
         'echo-message',
         'multi-prefix',
         'away-notify',
+        'chghost',
         'cap-notify',
         'server-time',
+        'userhost-in-names',
     ]
     for cap in core_caps:
         if cap not in bot._cap_reqs:
@@ -970,7 +961,6 @@ def receive_cap_ack_sasl(bot):
     if not password:
         return
 
-    mech = mech or 'PLAIN'
     available_mechs = bot.server_capabilities.get('sasl', '')
     available_mechs = available_mechs.split(',') if available_mechs else []
 
@@ -1021,9 +1011,9 @@ def send_authenticate(bot, token):
         bot.write(('AUTHENTICATE', '+'))
 
 
-@module.event('AUTHENTICATE')
+@plugin.event('AUTHENTICATE')
 @plugin.thread(False)
-@module.unblockable
+@plugin.unblockable
 @plugin.priority('medium')
 def auth_proceed(bot, trigger):
     """Handle client-initiated SASL auth.
@@ -1038,10 +1028,23 @@ def auth_proceed(bot, trigger):
         be ignored. If none is set, then this function does nothing.
 
     """
-    if trigger.args[0] != '+':
-        # How did we get here? I am not good with computer.
+    if bot.config.core.auth_method == 'sasl':
+        mech = bot.config.core.auth_target or 'PLAIN'
+    elif bot.config.core.server_auth_method == 'sasl':
+        mech = bot.config.core.server_auth_sasl_mech or 'PLAIN'
+    else:
         return
-    # Is this right?
+
+    if mech == 'EXTERNAL':
+        if trigger.args[0] != '+':
+            # not an expected response from the server; abort SASL
+            token = '*'
+        else:
+            token = '+'
+
+        bot.write(('AUTHENTICATE', token))
+        return
+
     if bot.config.core.auth_method == 'sasl':
         sasl_username = bot.config.core.auth_username
         sasl_password = bot.config.core.auth_password
@@ -1049,20 +1052,31 @@ def auth_proceed(bot, trigger):
         sasl_username = bot.config.core.server_auth_username
         sasl_password = bot.config.core.server_auth_password
     else:
+        # How did we get here? I am not good with computer
         return
+
     sasl_username = sasl_username or bot.nick
-    sasl_token = _make_sasl_plain_token(sasl_username, sasl_password)
-    LOGGER.info("Sending SASL Auth token.")
-    send_authenticate(bot, sasl_token)
+
+    if mech == 'PLAIN':
+        if trigger.args[0] != '+':
+            # not an expected response from the server; abort SASL
+            token = '*'
+        else:
+            sasl_token = _make_sasl_plain_token(sasl_username, sasl_password)
+            LOGGER.info("Sending SASL Auth token.")
+            send_authenticate(bot, sasl_token)
+        return
+
+    # TODO: Implement SCRAM challenges
 
 
 def _make_sasl_plain_token(account, password):
     return '\x00'.join((account, account, password))
 
 
-@module.event(events.RPL_SASLSUCCESS)
+@plugin.event(events.RPL_SASLSUCCESS)
 @plugin.thread(False)
-@module.unblockable
+@plugin.unblockable
 @plugin.priority('medium')
 def sasl_success(bot, trigger):
     """End CAP request on successful SASL auth.
@@ -1092,9 +1106,9 @@ def sasl_fail(bot, trigger):
     bot.quit('SASL Auth Failed')
 
 
-@module.event(events.RPL_SASLMECHS)
+@plugin.event(events.RPL_SASLMECHS)
 @plugin.thread(False)
-@module.unblockable
+@plugin.unblockable
 @plugin.priority('low')
 def sasl_mechs(bot, trigger):
     # Presumably we're only here if we said we actually *want* sasl, but still
@@ -1140,23 +1154,27 @@ def sasl_mechs(bot, trigger):
 def _get_sasl_pass_and_mech(bot):
     password = None
     mech = None
+
     if bot.config.core.auth_method == 'sasl':
         password = bot.config.core.auth_password
         mech = bot.config.core.auth_target
     elif bot.config.core.server_auth_method == 'sasl':
         password = bot.config.core.server_auth_password
         mech = bot.config.core.server_auth_sasl_mech
+
+    mech = 'PLAIN' if mech is None else mech.upper()
+
     return password, mech
 
 
 # Live blocklist editing
 
 
-@module.commands('blocks')
-@module.thread(False)
-@module.unblockable
-@module.priority('low')
-@module.require_admin
+@plugin.commands('blocks')
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('low')
+@plugin.require_admin
 def blocks(bot, trigger):
     """
     Manage Sopel's blocking features.\
@@ -1234,7 +1252,33 @@ def blocks(bot, trigger):
         bot.reply(STRINGS['huh'])
 
 
-@module.event('ACCOUNT')
+@plugin.event('CHGHOST')
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('medium')
+def recv_chghost(bot, trigger):
+    """Track user/host changes."""
+    if trigger.nick not in bot.users:
+        bot.users[trigger.nick] = target.User(
+            trigger.nick, trigger.user, trigger.host)
+
+    try:
+        new_user, new_host = trigger.args
+    except ValueError:
+        LOGGER.warning(
+            "Ignoring CHGHOST command with %s arguments: %r",
+            'extra' if len(trigger.args) > 2 else 'insufficient',
+            trigger.args)
+        return
+
+    bot.users[trigger.nick].user = new_user
+    bot.users[trigger.nick].host = new_host
+    LOGGER.info(
+        "Update user@host for nick %r: %s@%s",
+        trigger.nick, new_user, new_host)
+
+
+@plugin.event('ACCOUNT')
 @plugin.thread(False)
 @plugin.unblockable
 @plugin.priority('medium')
@@ -1250,9 +1294,9 @@ def account_notify(bot, trigger):
     LOGGER.info("Update account for nick %r: %s", trigger.nick, account)
 
 
-@module.event(events.RPL_WHOSPCRPL)
+@plugin.event(events.RPL_WHOSPCRPL)
 @plugin.thread(False)
-@module.unblockable
+@plugin.unblockable
 @plugin.priority('medium')
 def recv_whox(bot, trigger):
     """Track ``WHO`` responses when ``WHOX`` is enabled."""
@@ -1292,26 +1336,23 @@ def _record_who(bot, channel, user, host, nick, account=None, away=None, modes=N
     priv = 0
     if modes:
         mapping = {
-            "+": module.VOICE,
-            "%": module.HALFOP,
-            "@": module.OP,
-            "&": module.ADMIN,
-            "~": module.OWNER,
-            "!": module.OPER,
+            "+": plugin.VOICE,
+            "%": plugin.HALFOP,
+            "@": plugin.OP,
+            "&": plugin.ADMIN,
+            "~": plugin.OWNER,
+            "!": plugin.OPER,
         }
         for c in modes:
             priv = priv | mapping[c]
     if channel not in bot.channels:
         bot.channels[channel] = target.Channel(channel)
     bot.channels[channel].add_user(usr, privs=priv)
-    if channel not in bot.privileges:
-        bot.privileges[channel] = {}
-    bot.privileges[channel][nick] = priv
 
 
-@module.event(events.RPL_WHOREPLY)
+@plugin.event(events.RPL_WHOREPLY)
 @plugin.thread(False)
-@module.unblockable
+@plugin.unblockable
 @plugin.priority('medium')
 def recv_who(bot, trigger):
     """Track ``WHO`` responses when ``WHOX`` is not enabled."""
@@ -1321,9 +1362,9 @@ def recv_who(bot, trigger):
     _record_who(bot, channel, user, host, nick, away=away, modes=modes)
 
 
-@module.event('AWAY')
-@module.thread(False)
-@module.unblockable
+@plugin.event('AWAY')
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_notify(bot, trigger):
     """Track users going away or coming back."""
@@ -1336,10 +1377,10 @@ def track_notify(bot, trigger):
     LOGGER.info("User %s: %s", state_change, trigger.nick)
 
 
-@module.event('TOPIC')
-@module.event(events.RPL_TOPIC)
-@module.thread(False)
-@module.unblockable
+@plugin.event('TOPIC')
+@plugin.event(events.RPL_TOPIC)
+@plugin.thread(False)
+@plugin.unblockable
 @plugin.priority('medium')
 def track_topic(bot, trigger):
     """Track channels' topics."""
@@ -1353,7 +1394,7 @@ def track_topic(bot, trigger):
     LOGGER.info("Channel's topic updated: %s", channel)
 
 
-@module.rule(r'(?u).*(.+://\S+).*')
+@plugin.rule(r'(?u).*(.+://\S+).*')
 def handle_url_callbacks(bot, trigger):
     """Dispatch callbacks on URLs
 
