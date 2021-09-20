@@ -12,5 +12,5 @@ sphinx>=4,<5
 # showed that they will indeed make major changes in patch versions
 sphinxcontrib-autoprogram==0.1.7
 vcrpy<3.0.0
-build==0.6.0.post1
+build==0.7.0
 pipdeptree==2.1.0
