@@ -29,6 +29,7 @@ class WikiParser(HTMLParser):
         self.section_name = section_name
 
         self.citations = False
+        self.messagebox = False
         self.span_depth = 0
         self.div_depth = 0
 
@@ -49,13 +50,34 @@ class WikiParser(HTMLParser):
                     if attr[0] == 'class' and 'edit' in attr[1]:
                         self.span_depth += 1
 
-        elif tag == 'div':  # We want to skip thumbnail text and the inexplicable table of contents, and as such also need to track div depth
+        elif tag == 'div':
+            # We want to skip thumbnail text and the inexplicable table of contents,
+            # and as such also need to track div depth
             if self.div_depth:
                 self.div_depth += 1
             else:
                 for attr in attrs:
                     if attr[0] == 'class' and ('thumb' in attr[1] or attr[1] == 'toc'):
                         self.div_depth += 1
+
+        elif tag == 'table':
+            # Message box templates are what we want to ignore here
+            for attr in attrs:
+                if (
+                    attr[0] == 'class'
+                    and any(classname in attr[1].lower() for classname in [
+                        # Most of list from https://en.wikipedia.org/wiki/Template:Mbox_templates_see_also
+                        'ambox',  # messageboxes on article pages
+                        'cmbox',  # messageboxes on category pages
+                        'imbox',  # messageboxes on file (image) pages
+                        'tmbox',  # messageboxes on talk pages
+                        'fmbox',  # header and footer messageboxes
+                        'ombox',  # messageboxes on other types of page
+                        'mbox',  # for messageboxes that are used in different namespaces and change their presentation accordingly
+                        'dmbox',  # for disambiguation messageboxes
+                    ])
+                ):
+                    self.messagebox = True
 
         elif tag == 'ol':
             for attr in attrs:
@@ -71,9 +93,11 @@ class WikiParser(HTMLParser):
             self.span_depth -= 1
         if self.div_depth and tag == 'div':
             self.div_depth -= 1
+        if self.messagebox and tag == 'table':
+            self.messagebox = False
 
     def handle_data(self, data):
-        if self.consume and not any([self.citations, self.span_depth, self.div_depth]):
+        if self.consume and not any([self.citations, self.messagebox, self.span_depth, self.div_depth]):
             if not (self.is_header and data == self.section_name):  # Skip the initial header info only
                 self.result += data
 
@@ -84,11 +108,6 @@ class WikiParser(HTMLParser):
 class WikipediaSection(types.StaticSection):
     default_lang = types.ValidatedAttribute('default_lang', default='en')
     """The default language to find articles from (same as Wikipedia language subdomain)."""
-    lang_per_channel = types.ValidatedAttribute('lang_per_channel')
-    """List of ``#channel:langcode`` pairs to define Wikipedia language per channel.
-
-    Deprecated: Will be removed in Sopel 8. Use ``.wpclang`` to manage per-channel language settings.
-    """
 
 
 def setup(bot):
@@ -118,12 +137,6 @@ def choose_lang(bot, trigger):
         channel_lang = bot.db.get_channel_value(trigger.sender, 'wikipedia_lang')
         if channel_lang:
             return channel_lang
-
-    if bot.config.wikipedia.lang_per_channel:
-        customlang = re.search('(' + trigger.sender + r'):(\w+)',
-                               bot.config.wikipedia.lang_per_channel)
-        if customlang is not None:
-            return customlang.group(2)
 
     return bot.config.wikipedia.default_lang
 
@@ -214,6 +227,11 @@ def mw_section(server, query, section):
     for entry in sections['parse']['sections']:
         if entry['anchor'] == section:
             section_number = entry['index']
+            # Needed to handle sections from transcluded pages properly
+            # e.g. template documentation (usually pulled in from /doc subpage).
+            # One might expect this prop to be nullable because in most cases it
+            # will simply repeat the requested page title, but it's always set.
+            fetch_title = quote(entry['fromtitle'])
             break
 
     if not section_number:
@@ -221,7 +239,7 @@ def mw_section(server, query, section):
 
     snippet_url = ('https://{0}/w/api.php?format=json&redirects'
                    '&action=parse&page={1}&prop=text'
-                   '&section={2}').format(server, query, section_number)
+                   '&section={2}').format(server, fetch_title, section_number)
 
     data = get(snippet_url).json()
 
@@ -234,7 +252,7 @@ def mw_section(server, query, section):
 
 
 # Matches a wikipedia page (excluding spaces and #, but not /File: links), with a separate optional field for the section
-@plugin.url(r'https?:\/\/([a-z]+\.wikipedia\.org)\/wiki\/((?!File\:)[^ #]+)#?([^ ]*)')
+@plugin.url(r'https?:\/\/([a-z]+(?:\.m)?\.wikipedia\.org)\/wiki\/((?!File\:)[^ #]+)#?([^ ]*)')
 @plugin.output_prefix(PLUGIN_OUTPUT_PREFIX)
 def mw_info(bot, trigger, match=None):
     """Retrieves and outputs a snippet of the linked page."""
@@ -288,12 +306,13 @@ def wplang(bot, trigger):
                     bot.config.wikipedia.default_lang)
             )
         )
-    else:
-        bot.db.set_nick_value(trigger.nick, 'wikipedia_lang', trigger.group(3))
-        bot.reply(
-            "Set your Wikipedia language to: {}"
-            .format(trigger.group(3))
-        )
+        return
+
+    bot.db.set_nick_value(trigger.nick, 'wikipedia_lang', trigger.group(3))
+    bot.reply(
+        "Set your Wikipedia language to: {}"
+        .format(trigger.group(3))
+    )
 
 
 @plugin.command('wpclang')
@@ -304,6 +323,7 @@ def wpclang(bot, trigger):
     if not (trigger.admin or bot.channels[trigger.sender.lower()].privileges[trigger.nick.lower()] >= plugin.OP):
         bot.reply("You don't have permission to change this channel's Wikipedia language setting.")
         return plugin.NOLIMIT
+
     if not trigger.group(3):
         bot.say(
             "{}'s current Wikipedia language is: {}"
@@ -314,9 +334,10 @@ def wpclang(bot, trigger):
                     bot.config.wikipedia.default_lang)
             )
         )
-    else:
-        bot.db.set_channel_value(trigger.sender, 'wikipedia_lang', trigger.group(3))
-        bot.say(
-            "Set {}'s Wikipedia language to: {}"
-            .format(trigger.sender, trigger.group(3))
-        )
+        return
+
+    bot.db.set_channel_value(trigger.sender, 'wikipedia_lang', trigger.group(3))
+    bot.say(
+        "Set {}'s Wikipedia language to: {}"
+        .format(trigger.sender, trigger.group(3))
+    )

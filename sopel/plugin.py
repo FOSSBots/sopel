@@ -581,7 +581,7 @@ def command(*command_list):
 
     Another option is to declare command with subcommands only, like this::
 
-        @command('main sub1)
+        @command('main sub1')
             # this command will be triggered on .main sub1
 
         @command('main sub2')
@@ -1258,7 +1258,7 @@ def url_lazy(*loaders):
     return decorator
 
 
-class example(object):
+class example:
     """Decorate a function with an example, and optionally test output.
 
     :param str msg: the example command (required; see below)

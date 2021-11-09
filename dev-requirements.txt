@@ -1,9 +1,9 @@
 coveralls>=2.0
-flake8>=3.7.0,<3.8.0
+flake8>=3.7.0,<4.1.0
 flake8-coding
 flake8-future-import
 flake8-import-order
-furo==2021.7.28b40  # Sphinx theme
+furo==2021.10.9  # Sphinx theme
 pytest>=4.6,<4.7
 pytest-vcr==1.0.2
 requests-mock==1.9.3
@@ -12,5 +12,5 @@ sphinx>=4,<5
 # showed that they will indeed make major changes in patch versions
 sphinxcontrib-autoprogram==0.1.7
 vcrpy<3.0.0
-build==0.5.1
-pipdeptree==2.0.0
+build==0.7.0
+pipdeptree==2.2.0
