@@ -81,7 +81,7 @@ class PluginValues(BASE):
     value = Column(String(255))
 
 
-class SopelDB(object):
+class SopelDB:
     """Database object class.
 
     :param config: Sopel's configuration settings
@@ -116,7 +116,6 @@ class SopelDB(object):
             self.type = self.url.drivername.split('+', 1)[0]
         elif config.core.db_type == 'sqlite':
             self.type = 'sqlite'
-            drivername = config.core.db_driver or 'sqlite'
             path = config.core.db_filename
             if path is None:
                 path = os.path.join(config.core.homedir, config.basename + '.db')

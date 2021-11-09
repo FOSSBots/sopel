@@ -767,6 +767,7 @@ def track_join(bot, trigger):
     # did *we* just join?
     if trigger.nick == bot.nick:
         LOGGER.info("Channel joined: %s", channel)
+        bot.channels[channel].join_time = trigger.time
         if bot.settings.core.throttle_join:
             LOGGER.debug("JOIN event added to queue for channel: %s", channel)
             bot.memory['join_events_queue'].append(channel)
@@ -904,6 +905,7 @@ def receive_cap_ls_reply(bot, trigger):
         'cap-notify',
         'server-time',
         'userhost-in-names',
+        'message-tags',
     ]
     for cap in core_caps:
         if cap not in bot._cap_reqs:
@@ -1058,14 +1060,18 @@ def auth_proceed(bot, trigger):
     sasl_username = sasl_username or bot.nick
 
     if mech == 'PLAIN':
-        if trigger.args[0] != '+':
-            # not an expected response from the server; abort SASL
-            token = '*'
-        else:
+        if trigger.args[0] == '+':
             sasl_token = _make_sasl_plain_token(sasl_username, sasl_password)
             LOGGER.info("Sending SASL Auth token.")
             send_authenticate(bot, sasl_token)
-        return
+            return
+        else:
+            # Not an expected response from the server
+            LOGGER.warning("Aborting SASL: unexpected server reply '%s'" % trigger)
+            # Send `authenticate-abort` command
+            # See https://ircv3.net/specs/extensions/sasl-3.1#the-authenticate-command
+            bot.write(('AUTHENTICATE', '*'))
+            return
 
     # TODO: Implement SCRAM challenges
 

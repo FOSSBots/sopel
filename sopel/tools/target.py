@@ -7,7 +7,7 @@ from sopel.tools import Identifier
 
 
 @functools.total_ordering
-class User(object):
+class User:
     """A representation of a user Sopel is aware of.
 
     :param nick: the user's nickname
@@ -53,7 +53,7 @@ class User(object):
 
 
 @functools.total_ordering
-class Channel(object):
+class Channel:
     """A representation of a channel Sopel is in.
 
     :param name: the channel name
@@ -94,6 +94,13 @@ class Channel(object):
 
         self.last_who = None
         """The last time a WHO was requested for the channel."""
+
+        self.join_time = None
+        """The time the server acknowledged our JOIN message.
+
+        Based on server-reported time if the ``server-time`` IRCv3 capability
+        is available, otherwise the time Sopel received it.
+        """
 
     def clear_user(self, nick):
         """Remove ``nick`` from this channel.
