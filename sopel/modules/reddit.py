@@ -7,14 +7,14 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 import datetime as dt
 import html
 import re
 
-import praw
-import prawcore
+import praw  # type: ignore[import]
+import prawcore  # type: ignore[import]
 import requests
 
 from sopel import plugin
@@ -29,12 +29,12 @@ domain = r'https?://(?:www\.|old\.|pay\.|ssl\.|[a-z]{2}\.)?reddit\.com'
 subreddit_url = r'%s/r/([\w-]+)/?$' % domain
 post_or_comment_url = (
     domain +
-    r'/r/\S+?/comments/(?P<submission>[\w-]+)'
+    r'(?:/r/\S+?)?/comments/(?P<submission>[\w-]+)'
     r'(?:/?(?:[\w%]+/(?P<comment>[\w-]+))?)'
 )
-short_post_url = r'https?://(redd\.it|reddit\.com)/(?P<submission>[\w-]+)'
+short_post_url = r'https?://(redd\.it|reddit\.com)/(?P<submission>[\w-]+)/?$'
 user_url = r'%s/u(?:ser)?/([\w-]+)' % domain
-image_url = r'https?://i\.redd\.it/\S+'
+image_url = r'https?://(?P<subdomain>i|preview)\.redd\.it/(?P<image>[^?\s]+)'
 video_url = r'https?://v\.redd\.it/([\w-]+)'
 gallery_url = r'https?://(?:www\.)?reddit\.com/gallery/([\w-]+)'
 
@@ -88,6 +88,9 @@ def get_is_cakeday(entrytime):
 @plugin.output_prefix(PLUGIN_OUTPUT_PREFIX)
 def image_info(bot, trigger, match):
     url = match.group(0)
+    preview = match.group("subdomain") == "preview"
+    if preview:
+        url = "https://i.redd.it/{}".format(match.group("image"))
     results = list(
         bot.memory['reddit_praw']
         .subreddit('all')
@@ -98,7 +101,7 @@ def image_info(bot, trigger, match):
     except IndexError:
         # Fail silently if the image link can't be mapped to a submission
         return plugin.NOLIMIT
-    return say_post_info(bot, trigger, oldest.id, False, True)
+    return say_post_info(bot, trigger, oldest.id, preview, True)
 
 
 @plugin.url(video_url)
@@ -143,9 +146,13 @@ def say_post_info(bot, trigger, id_, show_link=True, show_comments_link=False):
         s = bot.memory['reddit_praw'].submission(id=id_)
 
         message = (
-            '{title} {link}{nsfw} | {points} {points_text} ({percent}) | '
-            '{comments} {comments_text} | Posted by {author} | '
+            '{title}{flair} {link}{nsfw} | {points} {points_text} ({percent}) '
+            '| {comments} {comments_text} | Posted by {author} | '
             'Created at {created}{comments_link}')
+
+        flair = ''
+        if s.link_flair_text:
+            flair = " ('{}' flair)".format(s.link_flair_text)
 
         subreddit = s.subreddit.display_name
         if not show_link:
@@ -205,9 +212,10 @@ def say_post_info(bot, trigger, id_, show_link=True, show_comments_link=False):
 
         title = html.unescape(s.title)
         message = message.format(
-            title=title, link=link, nsfw=nsfw, points=s.score, points_text=points_text,
-            percent=percent, comments=s.num_comments, comments_text=comments_text,
-            author=author, created=created, comments_link=comments_link)
+            title=title, flair=flair, link=link, nsfw=nsfw, points=s.score,
+            points_text=points_text, percent=percent, comments=s.num_comments,
+            comments_text=comments_text, author=author, created=created,
+            comments_link=comments_link)
 
         bot.say(message)
     except prawcore.exceptions.NotFound:

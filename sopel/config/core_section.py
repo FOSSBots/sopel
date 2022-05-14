@@ -1,4 +1,4 @@
-from __future__ import generator_stop
+from __future__ import annotations
 
 import os.path
 
@@ -880,7 +880,7 @@ class CoreSection(StaticSection):
     :default: ``Sopel: https://sopel.chat/``
     """
 
-    nick = ValidatedAttribute('nick', Identifier, default=Identifier('Sopel'))
+    nick = ValidatedAttribute('nick', default='Sopel')
     """The nickname for the bot.
 
     :default: ``Sopel``

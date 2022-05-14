@@ -11,19 +11,21 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 from collections import deque
 import re
 
 from sopel import plugin
 from sopel.formatting import bold
-from sopel.tools import Identifier, SopelIdentifierMemory
+from sopel.tools import SopelIdentifierMemory
 
 
 def setup(bot):
     if 'find_lines' not in bot.memory:
-        bot.memory['find_lines'] = SopelIdentifierMemory()
+        bot.memory['find_lines'] = SopelIdentifierMemory(
+            identifier_factory=bot.make_identifier,
+        )
 
 
 def shutdown(bot):
@@ -40,22 +42,25 @@ def shutdown(bot):
 @plugin.unblockable
 def collectlines(bot, trigger):
     """Create a temporary log of what people say"""
+    line = trigger.group()
+    if line.startswith('s/') or line.startswith('s|'):
+        # Don't remember substitutions
+        return
+
     # Add a log for the channel and nick, if there isn't already one
     if trigger.sender not in bot.memory['find_lines']:
-        bot.memory['find_lines'][trigger.sender] = SopelIdentifierMemory()
+        bot.memory['find_lines'][trigger.sender] = SopelIdentifierMemory(
+            identifier_factory=bot.make_identifier,
+        )
     if trigger.nick not in bot.memory['find_lines'][trigger.sender]:
         bot.memory['find_lines'][trigger.sender][trigger.nick] = deque(maxlen=10)
 
     # Update in-memory list of the user's lines in the channel
     line_list = bot.memory['find_lines'][trigger.sender][trigger.nick]
-    line = trigger.group()
-    if line.startswith('s/') or line.startswith('s|'):
-        # Don't remember substitutions
-        return
-    # store messages in reverse order (most recent first)
-    elif line.startswith('\x01ACTION'):  # For /me messages
-        line = line[:-1]
-        line_list.appendleft(line)
+
+    # Messages are stored in reverse order (most recent first)
+    if line.startswith('\x01ACTION'):
+        line_list.appendleft(line[:-1])
     else:
         line_list.appendleft(line)
 
@@ -102,7 +107,7 @@ def quit_cleanup(bot, trigger):
 @plugin.unblockable
 def kick_cleanup(bot, trigger):
     """Clean up cached data when a user is kicked from a channel."""
-    nick = Identifier(trigger.args[1])
+    nick = bot.make_identifier(trigger.args[1])
     if nick == bot.nick:
         # We got kicked! Nuke the whole channel.
         _cleanup_channel(bot, trigger.sender)
@@ -153,7 +158,7 @@ def findandreplace(bot, trigger):
         return
 
     # Correcting other person vs self.
-    rnick = Identifier(trigger.group('nick') or trigger.nick)
+    rnick = bot.make_identifier(trigger.group('nick') or trigger.nick)
 
     # only do something if there is conversation to work with
     history = bot.memory['find_lines'].get(trigger.sender, {}).get(rnick, None)

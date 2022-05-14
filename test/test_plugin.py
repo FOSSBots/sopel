@@ -1,5 +1,5 @@
 """Tests for sopel.plugin decorators"""
-from __future__ import generator_stop
+from __future__ import annotations
 
 from sopel import plugin
 from sopel.tests import rawlist
@@ -11,6 +11,27 @@ owner = Bar
 nick = Sopel
 enable = coretasks
 """
+
+
+def test_allow_bots():
+    # test decorator with parentheses
+    @plugin.allow_bots()
+    def mock(bot, trigger, match):
+        return True
+    assert mock.allow_bots is True
+
+    # test decorator without parentheses
+    @plugin.allow_bots
+    def mock(bot, trigger, match):
+        return True
+    assert mock.allow_bots is True
+
+    # test without decorator
+    def mock(bot, trigger, match):
+        return True
+    # on undecorated callables, the attr only exists after the loader loads them
+    # so this cannot `assert mock.allow_bots is False` here
+    assert not hasattr(mock, 'allow_bots')
 
 
 def test_find():

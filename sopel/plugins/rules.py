@@ -14,7 +14,7 @@
 # Copyright 2020, Florian Strzelecki <florian.strzelecki@gmail.com>
 #
 # Licensed under the Eiffel Forum License 2.
-from __future__ import generator_stop
+from __future__ import annotations
 
 import abc
 import datetime
@@ -465,7 +465,7 @@ class AbstractRule(abc.ABC):
 
     """
     @classmethod
-    @abc.abstractclassmethod
+    @abc.abstractmethod
     def from_callable(cls: Type[TypedRule], settings, handler) -> TypedRule:
         """Instantiate a rule object from ``settings`` and ``handler``.
 
@@ -606,7 +606,7 @@ class AbstractRule(abc.ABC):
 
         This method must return a list of `match objects`__.
 
-        .. __: https://docs.python.org/3.6/library/re.html#match-objects
+        .. __: https://docs.python.org/3.7/library/re.html#match-objects
         """
 
     @abc.abstractmethod
@@ -625,6 +625,23 @@ class AbstractRule(abc.ABC):
         :param str intent: potential matching intent
         :return: ``True`` when ``intent`` matches the rule, ``False`` otherwise
         :rtype: bool
+        """
+
+    @abc.abstractmethod
+    def allow_bots(self) -> bool:
+        """Tell if the rule should match bot commands.
+
+        :return: ``True`` when the rule allows bot commands,
+                 ``False`` otherwise
+
+        A "bot command" is any IRC protocol command or numeric that has been
+        tagged as ``bot`` (or ``draft/bot``) by the IRC server.
+
+        .. seealso::
+
+            The `IRCv3 Bot Mode specification`__.
+
+        .. __: https://ircv3.net/specs/extensions/bot-mode
         """
 
     @abc.abstractmethod
@@ -685,7 +702,7 @@ class AbstractRule(abc.ABC):
         :return: yield a list of match object
         :rtype: generator of `re.match`__
 
-        .. __: https://docs.python.org/3.6/library/re.html#match-objects
+        .. __: https://docs.python.org/3.7/library/re.html#match-objects
         """
 
     @abc.abstractmethod
@@ -758,6 +775,7 @@ class Rule(AbstractRule):
             'priority': getattr(handler, 'priority', PRIORITY_MEDIUM),
             'events': getattr(handler, 'event', []),
             'intents': getattr(handler, 'intents', []),
+            'allow_bots': getattr(handler, 'allow_bots', False),
             'allow_echo': getattr(handler, 'echo', False),
             'threaded': getattr(handler, 'thread', True),
             'output_prefix': getattr(handler, 'output_prefix', ''),
@@ -847,6 +865,7 @@ class Rule(AbstractRule):
                  handler=None,
                  events=None,
                  intents=None,
+                 allow_bots=False,
                  allow_echo=False,
                  threaded=True,
                  output_prefix=None,
@@ -867,6 +886,7 @@ class Rule(AbstractRule):
         # filters
         self._events = events or ['PRIVMSG']
         self._intents = intents or []
+        self._allow_bots = bool(allow_bots)
         self._allow_echo = bool(allow_echo)
 
         # execution
@@ -962,10 +982,7 @@ class Rule(AbstractRule):
         intent = pretrigger.tags.get('intent')
         nick = pretrigger.nick
         is_bot_message = (
-            (
-                'draft/bot' in pretrigger.tags or  # can be removed...someday
-                'bot' in pretrigger.tags
-            ) and
+            'bot' in pretrigger.tags and
             event in ["PRIVMSG", "NOTICE"]
         )
         is_echo_message = (
@@ -976,8 +993,10 @@ class Rule(AbstractRule):
         return (
             self.match_event(event) and
             self.match_intent(intent) and
-            (not is_bot_message or (is_echo_message and self.allow_echo())) and
-            (not is_echo_message or self.allow_echo())
+            (
+                (not is_bot_message or self.allow_bots()) or
+                (is_echo_message and self.allow_echo())
+            ) and (not is_echo_message or self.allow_echo())
         )
 
     def parse(self, text):
@@ -997,6 +1016,9 @@ class Rule(AbstractRule):
             regex.match(intent)
             for regex in self._intents
         ))
+
+    def allow_bots(self):
+        return self._allow_bots
 
     def allow_echo(self):
         return self._allow_echo
@@ -1063,8 +1085,8 @@ class Rule(AbstractRule):
         return exit_code
 
 
-class NamedRuleMixin:
-    """Mixin for named rules.
+class AbstractNamedRule(Rule):
+    """Abstract base class for named rules.
 
     A named rule is invoked by using a specific word, and is usually known
     as a "command". For example, the command "hello" is triggered by using
@@ -1072,6 +1094,11 @@ class NamedRuleMixin:
 
     A named rule can be invoked by using one of its aliases, also.
     """
+    def __init__(self, name, aliases=None, **kwargs):
+        super().__init__([], **kwargs)
+        self._name = name
+        self._aliases = tuple(aliases) if aliases is not None else tuple()
+
     @property
     def name(self):
         return self._name
@@ -1133,8 +1160,15 @@ class NamedRuleMixin:
 
         return name
 
+    @abc.abstractmethod
+    def get_rule_regex(self):
+        """Make the rule regex for this named rule.
 
-class Command(NamedRuleMixin, Rule):
+        :return: a compiled regex for this named rule and its aliases
+        """
+
+
+class Command(AbstractNamedRule):
     """Command rule definition.
 
     A command rule (or simply "a command") is a named rule, i.e. it has a known
@@ -1196,11 +1230,9 @@ class Command(NamedRuleMixin, Rule):
                  help_prefix=COMMAND_DEFAULT_HELP_PREFIX,
                  aliases=None,
                  **kwargs):
-        super().__init__([], **kwargs)
-        self._name = name
+        super().__init__(name, aliases=aliases, **kwargs)
         self._prefix = prefix
         self._help_prefix = help_prefix
-        self._aliases = tuple(aliases) if aliases is not None else tuple()
         self._regexes = (self.get_rule_regex(),)
 
     def __str__(self):
@@ -1259,7 +1291,7 @@ class Command(NamedRuleMixin, Rule):
         return re.compile(pattern, re.IGNORECASE | re.VERBOSE)
 
 
-class NickCommand(NamedRuleMixin, Rule):
+class NickCommand(AbstractNamedRule):
     """Nickname Command rule definition.
 
     A nickname command rule is a named rule with a twist: instead of a prefix,
@@ -1319,13 +1351,11 @@ class NickCommand(NamedRuleMixin, Rule):
         return cls(**kwargs)
 
     def __init__(self, nick, name, nick_aliases=None, aliases=None, **kwargs):
-        super().__init__([], **kwargs)
+        super().__init__(name, aliases=aliases, **kwargs)
         self._nick = nick
-        self._name = name
         self._nick_aliases = (tuple(nick_aliases)
                               if nick_aliases is not None
                               else tuple())
-        self._aliases = tuple(aliases) if aliases is not None else tuple()
         self._regexes = (self.get_rule_regex(),)
 
     def __str__(self):
@@ -1381,7 +1411,7 @@ class NickCommand(NamedRuleMixin, Rule):
             self._nick_aliases)
 
 
-class ActionCommand(NamedRuleMixin, Rule):
+class ActionCommand(AbstractNamedRule):
     """Action Command rule definition.
 
     An action command rule is a named rule that can be triggered only when the
@@ -1434,9 +1464,7 @@ class ActionCommand(NamedRuleMixin, Rule):
         return cls(**kwargs)
 
     def __init__(self, name, aliases=None, **kwargs):
-        super().__init__([], **kwargs)
-        self._name = name
-        self._aliases = tuple(aliases) if aliases is not None else tuple()
+        super().__init__(name, aliases=aliases, **kwargs)
         self._regexes = (self.get_rule_regex(),)
 
     def __str__(self):
