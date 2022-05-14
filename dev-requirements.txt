@@ -3,7 +3,7 @@ flake8>=3.7.0,<4.1.0
 flake8-coding
 flake8-future-import
 flake8-import-order
-furo==2022.1.2  # Sphinx theme
+furo==2022.4.7  # Sphinx theme
 pytest>=4.6,<4.7
 pytest-vcr==1.0.2
 requests-mock==1.9.3
