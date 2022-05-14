@@ -13,4 +13,4 @@ sphinx>=4,<5
 sphinxcontrib-autoprogram==0.1.7
 vcrpy<5.0.0
 build==0.7.0
-pipdeptree==2.2.0
+pipdeptree==2.2.1
