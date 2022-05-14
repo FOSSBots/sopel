@@ -6,11 +6,11 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 import re
 
-from sopel import formatting, plugin, tools
+from sopel import formatting, plugin
 
 
 ERROR_MESSAGE_NOT_OP = "I'm not a channel operator!"
@@ -101,7 +101,7 @@ def kick(bot, trigger):
     argc = len(text)
     if argc < 2:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     nick = opt
     channel = trigger.sender
     reasonidx = 2
@@ -112,33 +112,46 @@ def kick(bot, trigger):
         channel = opt
         reasonidx = 3
     reason = ' '.join(text[reasonidx:])
-    if nick != bot.config.core.nick:
-        bot.kick(nick, channel, reason)
+
+    if nick == bot.nick:
+        bot.reply("Hey! Don't kick me. :(")
+        return
+
+    bot.kick(nick, channel, reason)
 
 
 def configureHostMask(mask):
-    if mask == '*!*@*':
-        return mask
-    if re.match('^[^.@!/]+$', mask) is not None:
+    # shortcut for nick!*@*
+    if re.match(r'^[^.@!/\s]+$', mask) is not None:
         return '%s!*@*' % mask
-    if re.match('^[^@!]+$', mask) is not None:
+
+    # shortcut for *!*@host
+    # won't work for local names w/o dot, but does support cloaks/with/slashes
+    if re.match(r'^[^@!\s]+$', mask) is not None:
         return '*!*@%s' % mask
 
-    m = re.match('^([^!@]+)@$', mask)
+    # shortcut for *!user@*
+    # requires trailing @ to be recognized as a username instead of a nick
+    m = re.match(r'^([^!@\s]+)@$', mask)
     if m is not None:
         return '*!%s@*' % m.group(1)
 
-    m = re.match('^([^!@]+)@([^@!]+)$', mask)
+    # shortcut for *!user@host
+    m = re.match(r'^([^!@\s]+)@([^@!\s]+)$', mask)
     if m is not None:
         return '*!%s@%s' % (m.group(1), m.group(2))
 
-    m = re.match('^([^!@]+)!(^[!@]+)@?$', mask)
+    # shortcut for nick!user@*
+    m = re.match(r'^([^!@\s]+)!([^!@\s]+)@?$', mask)
     if m is not None:
         return '%s!%s@*' % (m.group(1), m.group(2))
 
-    if re.match(r'^\S+[!]\S+[@]\S+$', mask) is not None:
+    # not a shortcut; validate full NUH format
+    if re.match(r'^[^!@\s]+![^!@\s]+@[^!@\s]+$', mask) is not None:
         return mask
-    return ''
+
+    # not a shortcut nor a valid hostmask
+    raise ValueError('Invalid hostmask format or unsupported shorthand')
 
 
 @plugin.require_chanmsg
@@ -155,7 +168,7 @@ def ban(bot, trigger):
     argc = len(text)
     if argc < 2:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     banmask = opt
     channel = trigger.sender
     if not opt.is_nick():
@@ -163,9 +176,12 @@ def ban(bot, trigger):
             return
         channel = opt
         banmask = text[2]
-    banmask = configureHostMask(banmask)
-    if banmask == '':
+
+    try:
+        banmask = configureHostMask(banmask)
+    except ValueError:
         return
+
     bot.write(['MODE', channel, '+b', banmask])
 
 
@@ -182,7 +198,7 @@ def unban(bot, trigger):
     argc = len(text)
     if argc < 2:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     banmask = opt
     channel = trigger.sender
     if not opt.is_nick():
@@ -190,9 +206,12 @@ def unban(bot, trigger):
             return
         channel = opt
         banmask = text[2]
-    banmask = configureHostMask(banmask)
-    if banmask == '':
+
+    try:
+        banmask = configureHostMask(banmask)
+    except ValueError:
         return
+
     bot.write(['MODE', channel, '-b', banmask])
 
 
@@ -209,7 +228,7 @@ def quiet(bot, trigger):
     argc = len(text)
     if argc < 2:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     quietmask = opt
     channel = trigger.sender
     if not opt.is_nick():
@@ -217,9 +236,12 @@ def quiet(bot, trigger):
             return
         quietmask = text[2]
         channel = opt
-    quietmask = configureHostMask(quietmask)
-    if quietmask == '':
+
+    try:
+        quietmask = configureHostMask(quietmask)
+    except ValueError:
         return
+
     bot.write(['MODE', channel, '+q', quietmask])
 
 
@@ -236,7 +258,7 @@ def unquiet(bot, trigger):
     argc = len(text)
     if argc < 2:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     quietmask = opt
     channel = trigger.sender
     if not opt.is_nick():
@@ -244,9 +266,12 @@ def unquiet(bot, trigger):
             return
         quietmask = text[2]
         channel = opt
-    quietmask = configureHostMask(quietmask)
-    if quietmask == '':
+
+    try:
+        quietmask = configureHostMask(quietmask)
+    except ValueError:
         return
+
     bot.write(['MODE', channel, '-q', quietmask])
 
 
@@ -265,7 +290,7 @@ def kickban(bot, trigger):
     argc = len(text)
     if argc < 4:
         return
-    opt = tools.Identifier(text[1])
+    opt = bot.make_identifier(text[1])
     nick = opt
     mask = text[2]
     channel = trigger.sender
@@ -278,9 +303,12 @@ def kickban(bot, trigger):
         mask = text[3]
         reasonidx = 4
     reason = ' '.join(text[reasonidx:])
-    mask = configureHostMask(mask)
-    if mask == '':
+
+    try:
+        mask = configureHostMask(mask)
+    except ValueError:
         return
+
     bot.write(['MODE', channel, '+b', mask])
     bot.kick(nick, channel, reason)
 

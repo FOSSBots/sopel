@@ -7,10 +7,16 @@
 # Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
 # Licensed under the Eiffel Forum License 2.
 
-from __future__ import generator_stop
+from __future__ import annotations
 
 import functools
 import re
+import typing
+
+
+# import and expose privileges as shortcut
+from sopel.privileges import ADMIN, HALFOP, OP, OPER, OWNER, VOICE
+
 
 __all__ = [
     # constants
@@ -18,6 +24,7 @@ __all__ = [
     # decorators
     'action_command',
     'action_commands',
+    'allow_bots',
     'command',
     'commands',
     'ctcp',
@@ -61,75 +68,8 @@ for example, to allow a user to retry a failed command immediately.
 .. versionadded:: 4.0
 """
 
-VOICE = 1
-"""Privilege level for the +v channel permission
 
-.. versionadded:: 4.1
-"""
-
-HALFOP = 2
-"""Privilege level for the +h channel permission
-
-.. versionadded:: 4.1
-
-.. important::
-
-    Not all IRC networks support this privilege mode. If you are writing a
-    plugin for public distribution, ensure your code behaves sensibly if only
-    ``+v`` (voice) and ``+o`` (op) modes exist.
-
-"""
-
-OP = 4
-"""Privilege level for the +o channel permission
-
-.. versionadded:: 4.1
-"""
-
-ADMIN = 8
-"""Privilege level for the +a channel permission
-
-.. versionadded:: 4.1
-
-.. important::
-
-    Not all IRC networks support this privilege mode. If you are writing a
-    plugin for public distribution, ensure your code behaves sensibly if only
-    ``+v`` (voice) and ``+o`` (op) modes exist.
-
-"""
-
-OWNER = 16
-"""Privilege level for the +q channel permission
-
-.. versionadded:: 4.1
-
-.. important::
-
-    Not all IRC networks support this privilege mode. If you are writing a
-    plugin for public distribution, ensure your code behaves sensibly if only
-    ``+v`` (voice) and ``+o`` (op) modes exist.
-
-"""
-
-OPER = 32
-"""Privilege level for the +y/+Y channel permissions
-
-Note: Except for these (non-standard) channel modes, Sopel does not monitor or
-store any user's OPER status.
-
-.. versionadded:: 7.0.0
-
-.. important::
-
-    Not all IRC networks support this privilege mode. If you are writing a
-    plugin for public distribution, ensure your code behaves sensibly if only
-    ``+v`` (voice) and ``+o`` (op) modes exist.
-
-"""
-
-
-def unblockable(function):
+def unblockable(function: typing.Any) -> typing.Any:
     """Decorate a function to exempt it from the ignore/blocks system.
 
     For example, this can be used to ensure that important events such as
@@ -153,7 +93,7 @@ def unblockable(function):
     return function
 
 
-def interval(*intervals):
+def interval(*intervals: typing.Union[int, float]) -> typing.Callable:
     """Decorate a function to be called by the bot every *n* seconds.
 
     :param int intervals: one or more duration(s), in seconds
@@ -192,7 +132,7 @@ def interval(*intervals):
     return add_attribute
 
 
-def rule(*patterns):
+def rule(*patterns: typing.Union[str, typing.Pattern]) -> typing.Callable:
     """Decorate a function to be called when a line matches the given pattern.
 
     :param str patterns: one or more regular expression(s)
@@ -247,7 +187,7 @@ def rule(*patterns):
     return add_attribute
 
 
-def rule_lazy(*loaders):
+def rule_lazy(*loaders: typing.Callable) -> typing.Callable:
     """Decorate a callable as a rule with lazy loading.
 
     :param loaders: one or more functions to generate a list of **compiled**
@@ -295,7 +235,7 @@ def rule_lazy(*loaders):
     return decorator
 
 
-def find(*patterns):
+def find(*patterns: typing.Union[str, typing.Pattern]) -> typing.Callable:
     """Decorate a function to be called for each time a pattern is found in a line.
 
     :param str patterns: one or more regular expression(s)
@@ -350,7 +290,7 @@ def find(*patterns):
     return add_attribute
 
 
-def find_lazy(*loaders):
+def find_lazy(*loaders: typing.Callable) -> typing.Callable:
     """Decorate a callable as a find rule with lazy loading.
 
     :param loaders: one or more functions to generate a list of **compiled**
@@ -398,7 +338,7 @@ def find_lazy(*loaders):
     return decorator
 
 
-def search(*patterns):
+def search(*patterns: typing.Union[str, typing.Pattern]) -> typing.Callable:
     """Decorate a function to be called when a pattern matches anywhere in a line.
 
     :param str patterns: one or more regular expression(s)
@@ -456,7 +396,7 @@ def search(*patterns):
     return add_attribute
 
 
-def search_lazy(*loaders):
+def search_lazy(*loaders: typing.Callable) -> typing.Callable:
     """Decorate a callable as a search rule with lazy loading.
 
     :param loaders: one or more functions to generate a list of **compiled**
@@ -504,7 +444,7 @@ def search_lazy(*loaders):
     return decorator
 
 
-def thread(value):
+def thread(value: bool) -> typing.Callable:
     """Decorate a function to specify if it should be run in a separate thread.
 
     :param bool value: if ``True``, the function is called in a separate thread;
@@ -524,11 +464,42 @@ def thread(value):
     return add_attribute
 
 
-def echo(function=None):
+def allow_bots(
+    function: typing.Optional[typing.Any] = None,
+) -> typing.Union[typing.Any, typing.Callable]:
+    """Decorate a function to specify that it should receive events from bots.
+
+    On networks implementing the `Bot Mode specification`__, messages and
+    other events from other clients that have identified themselves as bots
+    will be tagged as such, and Sopel will ignore them by default. This
+    decorator allows a function to opt into receiving these events.
+
+    .. __: https://ircv3.net/specs/extensions/bot-mode
+    """
+    def add_attribute(function):
+        function.allow_bots = True
+        return function
+
+    # hack to allow both @allow_bots and @allow_bots() to work
+    if callable(function):
+        return add_attribute(function)
+    return add_attribute
+
+
+def echo(
+    function: typing.Optional[typing.Any] = None,
+) -> typing.Union[typing.Any, typing.Callable]:
     """Decorate a function to specify that it should receive echo messages.
 
     This decorator can be used to listen in on the messages that Sopel is
     sending and react accordingly.
+
+    .. important::
+
+        The decorated callable will receive *all* matching messages that Sopel
+        sends, including output from the same callable. Take care to avoid
+        creating feedback loops when using this feature.
+
     """
     def add_attribute(function):
         function.echo = True
@@ -540,7 +511,7 @@ def echo(function=None):
     return add_attribute
 
 
-def command(*command_list):
+def command(*command_list: str) -> typing.Callable:
     """Decorate a function to set one or more commands that should trigger it.
 
     :param str command_list: one or more command name(s) to match
@@ -637,7 +608,7 @@ commands = command
 """Alias to :func:`command`."""
 
 
-def nickname_command(*command_list):
+def nickname_command(*command_list: str) -> typing.Callable:
     """Decorate a function to trigger on lines starting with "$nickname: command".
 
     :param str command_list: one or more command name(s) to match
@@ -687,7 +658,7 @@ nickname_commands = nickname_command
 """Alias to :func:`nickname_command`."""
 
 
-def action_command(*command_list):
+def action_command(*command_list: str) -> typing.Callable:
     """Decorate a function to trigger on CTCP ACTION lines.
 
     :param str command_list: one or more command name(s) to match
@@ -736,7 +707,7 @@ action_commands = action_command
 """Alias to :func:`action_command`."""
 
 
-def label(value):
+def label(value: str) -> typing.Callable:
     """Decorate a function to add a rule label.
 
     :param str value: a label for the rule
@@ -762,7 +733,7 @@ def label(value):
     return add_attribute
 
 
-def priority(value):
+def priority(value: str) -> typing.Callable:
     """Decorate a function to be executed with higher or lower priority.
 
     :param str value: one of ``high``, ``medium``, or ``low``;
@@ -777,7 +748,7 @@ def priority(value):
     return add_attribute
 
 
-def event(*event_list):
+def event(*event_list: str) -> typing.Callable:
     """Decorate a function to be triggered on specific IRC events.
 
     :param str event_list: one or more event name(s) on which to trigger
@@ -805,7 +776,10 @@ def event(*event_list):
     return add_attribute
 
 
-def ctcp(function=None, *command_list):
+def ctcp(
+    function: typing.Any = None,
+    *command_list: str,
+) -> typing.Union[typing.Any, typing.Callable]:
     """Decorate a callable to trigger on CTCP commands (mostly, ``ACTION``).
 
     :param str command_list: one or more CTCP command(s) on which to trigger
@@ -846,7 +820,7 @@ def ctcp(function=None, *command_list):
     return add_attribute
 
 
-def rate(user=0, channel=0, server=0):
+def rate(user: int = 0, channel: int = 0, server: int = 0) -> typing.Callable:
     """Decorate a function to be rate-limited.
 
     :param int user: seconds between permitted calls of this function by the
@@ -875,7 +849,10 @@ def rate(user=0, channel=0, server=0):
     return add_attribute
 
 
-def require_privmsg(message=None, reply=False):
+def require_privmsg(
+    message: typing.Union[typing.Callable, typing.Optional[str]] = None,
+    reply: bool = False,
+) -> typing.Callable:
     """Decorate a function to only be triggerable from a private message.
 
     :param str message: optional message said if triggered in a channel
@@ -910,7 +887,10 @@ def require_privmsg(message=None, reply=False):
     return actual_decorator
 
 
-def require_chanmsg(message=None, reply=False):
+def require_chanmsg(
+    message: typing.Union[typing.Callable, typing.Optional[str]] = None,
+    reply: bool = False,
+) -> typing.Callable:
     """Decorate a function to only be triggerable from a channel message.
 
     :param str message: optional message said if triggered in private message
@@ -955,7 +935,10 @@ def require_chanmsg(message=None, reply=False):
     return actual_decorator
 
 
-def require_account(message=None, reply=False):  # lgtm [py/similar-function]
+def require_account(
+    message: typing.Union[typing.Callable, typing.Optional[str]] = None,
+    reply: bool = False,
+) -> typing.Callable:  # lgtm [py/similar-function]
     """Decorate a function to require services/NickServ authentication.
 
     :param str message: optional message to say if a user without
@@ -1001,7 +984,11 @@ def require_account(message=None, reply=False):  # lgtm [py/similar-function]
     return actual_decorator
 
 
-def require_privilege(level, message=None, reply=False):
+def require_privilege(
+    level: int,
+    message: typing.Optional[str] = None,
+    reply: bool = False,
+) -> typing.Callable:
     """Decorate a function to require at least the given channel permission.
 
     :param int level: required privilege level to use this command
@@ -1041,7 +1028,10 @@ def require_privilege(level, message=None, reply=False):
     return actual_decorator
 
 
-def require_admin(message=None, reply=False):  # lgtm [py/similar-function]
+def require_admin(
+    message: typing.Union[typing.Callable, typing.Optional[str]] = None,
+    reply: bool = False,
+) -> typing.Callable:  # lgtm [py/similar-function]
     """Decorate a function to require the triggering user to be a bot admin.
 
     :param str message: optional message said to non-admin user
@@ -1077,7 +1067,10 @@ def require_admin(message=None, reply=False):  # lgtm [py/similar-function]
     return actual_decorator
 
 
-def require_owner(message=None, reply=False):  # lgtm [py/similar-function]
+def require_owner(
+    message: typing.Union[typing.Callable, typing.Optional[str]] = None,
+    reply: bool = False,
+) -> typing.Callable:  # lgtm [py/similar-function]
     """Decorate a function to require the triggering user to be the bot owner.
 
     :param str message: optional message said to non-owner user
@@ -1112,7 +1105,11 @@ def require_owner(message=None, reply=False):  # lgtm [py/similar-function]
     return actual_decorator
 
 
-def require_bot_privilege(level, message=None, reply=False):
+def require_bot_privilege(
+    level: int,
+    message: typing.Optional[str] = None,
+    reply: bool = False,
+) -> typing.Callable:
     """Decorate a function to require a minimum channel privilege for the bot.
 
     :param int level: minimum channel privilege the bot needs for this function
@@ -1151,7 +1148,7 @@ def require_bot_privilege(level, message=None, reply=False):
     return actual_decorator
 
 
-def url(*url_rules):
+def url(*url_rules: str) -> typing.Callable:
     """Decorate a function to handle URLs.
 
     :param str url_rules: one or more regex pattern(s) to match URLs
@@ -1210,7 +1207,7 @@ def url(*url_rules):
     return actual_decorator
 
 
-def url_lazy(*loaders):
+def url_lazy(*loaders: typing.Callable) -> typing.Callable:
     """Decorate a function to handle URL, using lazy-loading for its regex.
 
     :param loaders: one or more functions to generate a list of **compiled**
@@ -1407,7 +1404,7 @@ class example:
         return func
 
 
-def output_prefix(prefix):
+def output_prefix(prefix: str) -> typing.Callable:
     """Decorate a function to add a prefix on its output.
 
     :param str prefix: the prefix to add (must include trailing whitespace if

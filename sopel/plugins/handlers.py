@@ -18,13 +18,13 @@ order to be used in the application.
 
 At the moment, three types of plugin are handled:
 
-* :class:`PyModulePlugin`: manage plugins that can be imported as Python
+* :class:`PyModulePlugin`: manages plugins that can be imported as Python
   module from a Python package, i.e. where ``from package import name`` works
-* :class:`PyFilePlugin`: manage plugins that are Python files on the filesystem
+* :class:`PyFilePlugin`: manages plugins that are Python files on the filesystem
   or Python directory (with an ``__init__.py`` file inside), that cannot be
   directly imported and extra steps are necessary
-* :class:`EntryPointPlugin`: manage plugins that are declared by a setuptools
-  entry point; other than that, it behaves like a :class:`PyModulePlugin`
+* :class:`EntryPointPlugin`: manages plugins that are declared by an entry
+  point; it otherwise behaves like a :class:`PyModulePlugin`
 
 All expose the same interface and thereby abstract the internal implementation
 away from the rest of the application.
@@ -41,7 +41,7 @@ away from the rest of the application.
 # Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
 #
 # Licensed under the Eiffel Forum License 2.
-from __future__ import generator_stop
+from __future__ import annotations
 
 import abc
 import imp
@@ -49,8 +49,9 @@ import importlib
 import inspect
 import itertools
 import os
+from typing import Optional
 
-from sopel import loader
+from sopel import __version__ as release, loader
 from . import exceptions
 
 try:
@@ -117,8 +118,18 @@ class AbstractPluginHandler(abc.ABC):
         * type: the plugin's type
         * source: the plugin's source
           (filesystem path, python import path, etc.)
+        * version: the plugin's version string if available, otherwise ``None``
         """
         # TODO: change return type to a TypedDict when dropping py3.7
+
+    @abc.abstractmethod
+    def get_version(self):
+        """Retrieve the plugin's version.
+
+        :return: the plugin's version string
+        :rtype: str
+        """
+        raise NotImplementedError
 
     @abc.abstractmethod
     def is_loaded(self) -> bool:
@@ -273,6 +284,7 @@ class PyModulePlugin(AbstractPluginHandler):
         * label: see :meth:`~sopel.plugins.handlers.PyModulePlugin.get_label`
         * type: see :attr:`PLUGIN_TYPE`
         * source: the name of the plugin's module
+        * version: the version string of the plugin if available, otherwise ``None``
 
         Example::
 
@@ -281,6 +293,7 @@ class PyModulePlugin(AbstractPluginHandler):
                 'type: 'python-module',
                 'label: 'example plugin',
                 'source': 'sopel_modules.example',
+                'version': '3.1.2',
             }
 
         """
@@ -289,7 +302,22 @@ class PyModulePlugin(AbstractPluginHandler):
             'type': self.PLUGIN_TYPE,
             'name': self.name,
             'source': self.module_name,
+            'version': self.get_version(),
         }
+
+    def get_version(self) -> Optional[str]:
+        """Retrieve the plugin's version.
+
+        :return: the plugin's version string
+        :rtype: Optional[str]
+        """
+        version: Optional[str] = None
+        if hasattr(self._module, "__version__"):
+            version = str(self._module.__version__)
+        elif self.module_name.startswith("sopel."):
+            version = release
+
+        return version
 
     def load(self):
         """Load the plugin's module using :func:`importlib.import_module`.
@@ -460,6 +488,7 @@ class PyFilePlugin(PyModulePlugin):
                 'type: 'python-file',
                 'label: 'example plugin',
                 'source': '/home/username/.sopel/plugins/example.py',
+                'version': '3.1.2',
             }
 
         """
@@ -483,17 +512,17 @@ class PyFilePlugin(PyModulePlugin):
 
 
 class EntryPointPlugin(PyModulePlugin):
-    """Sopel plugin loaded from a ``setuptools`` entry point.
+    """Sopel plugin loaded from an entry point.
 
-    :param entry_point: a ``setuptools`` entry point object
+    :param entry_point: an entry point object
 
-    This handler loads a Sopel plugin exposed by a ``setuptools`` entry point.
-    It expects to be able to load a module object from the entry point, and to
+    This handler loads a Sopel plugin exposed by a package's entry point. It
+    expects to be able to load a module object from the entry point, and to
     work as a :class:`~.PyModulePlugin` from that module.
 
-    By default, Sopel uses the entry point ``sopel.plugins``. To use that for
-    their plugin, developers must define an entry point either in their
-    ``setup.py`` file or their ``setup.cfg`` file::
+    By default, Sopel searches within the entry point group ``sopel.plugins``.
+    To use that for their own plugins, developers must define an entry point
+    either in their ``setup.py`` file or their ``setup.cfg`` file::
 
         # in setup.py file
         setup(
@@ -508,11 +537,11 @@ class EntryPointPlugin(PyModulePlugin):
 
     And this plugin can be loaded with::
 
-        >>> from pkg_resources import iter_entry_points
+        >>> from importlib_metadata import entry_points
         >>> from sopel.plugins.handlers import EntryPointPlugin
         >>> plugin = [
         ...     EntryPointPlugin(ep)
-        ...     for ep in iter_entry_points('sopel.plugins', 'custom')
+        ...     for ep in entry_points(group='sopel.plugins', name='custom')
         ... ][0]
         >>> plugin.load()
         >>> plugin.name
@@ -527,10 +556,15 @@ class EntryPointPlugin(PyModulePlugin):
         Sopel uses the :func:`~sopel.plugins.find_entry_point_plugins` function
         internally to search entry points.
 
-        Entry point is a `standard feature of setuptools`__ for Python, used
-        by other applications (like ``pytest``) for their plugins.
+        Entry points are a `standard packaging mechanism`__ for Python, used by
+        other applications (such as ``pytest``) for their plugins.
 
-        .. __: https://setuptools.readthedocs.io/en/stable/setuptools.html#dynamic-discovery-of-services-and-plugins
+        The ``importlib_metadata`` backport package is used for consistency
+        across all of Sopel's supported Python versions. Its API matches that
+        of :mod:`importlib.metadata` from Python 3.10 and up; Sopel will drop
+        this external requirement when practical.
+
+        .. __: https://packaging.python.org/en/latest/specifications/entry-points/
 
     """
 
@@ -554,20 +588,20 @@ class EntryPointPlugin(PyModulePlugin):
         :return: meta description information
         :rtype: :class:`dict`
 
-        This returns the same keys as
-        :meth:`PyModulePlugin.get_meta_description`; the ``source`` key is
-        modified to contain the setuptools entry point::
+        This returns the output of :meth:`PyModulePlugin.get_meta_description`
+        but with the ``source`` key modified to reference the entry point::
 
             {
                 'name': 'example',
                 'type: 'setup-entrypoint',
                 'label: 'example plugin',
                 'source': 'example = my_plugin.example',
+                'version': '3.1.2',
             }
 
         """
         data = super().get_meta_description()
         data.update({
-            'source': str(self.entry_point),
+            'source': self.entry_point.name + ' = ' + self.entry_point.value,
         })
         return data

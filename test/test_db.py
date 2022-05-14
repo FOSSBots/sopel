@@ -3,7 +3,7 @@
 TODO: Most of these tests assume functionality tested in other tests. This is
 enough to get everything working (and is better than nothing), but best
 practice would probably be not to do that."""
-from __future__ import generator_stop
+from __future__ import annotations
 
 import json
 import os
@@ -11,7 +11,14 @@ import tempfile
 
 import pytest
 
-from sopel.db import ChannelValues, Nicknames, NickValues, PluginValues, SopelDB
+from sopel.db import (
+    ChannelValues,
+    NickIDs,
+    Nicknames,
+    NickValues,
+    PluginValues,
+    SopelDB,
+)
 from sopel.tools import Identifier
 
 
@@ -39,38 +46,66 @@ def teardown_function(function):
 
 
 def test_get_nick_id(db):
-    session = db.ssession()
-    tests = [
-        [None, 'embolalia', Identifier('Embolalia')],
-        # Ensures case conversion is handled properly
-        [None, '{}{}', Identifier('[]{}')],
-        # Unicode, just in case
-        [None, 'embölaliå', Identifier('EmbölaliÅ')],
-    ]
+    """Test get_nick_id does not create NickID by default."""
+    nick = Identifier('Exirel')
+    session = db.session()
 
-    for test in tests:
-        test[0] = db.get_nick_id(test[2])
-        nick_id, slug, nick = test
-        registered = session.query(Nicknames) \
-                            .filter(Nicknames.canonical == nick) \
-                            .all()
-        assert len(registered) == 1
-        assert registered[0].slug == slug and registered[0].canonical == nick
+    # Attempt to get nick ID: it is not created by default
+    with pytest.raises(ValueError):
+        db.get_nick_id(nick)
 
-    # Check that each nick ended up with a different id
-    assert len(set(test[0] for test in tests)) == len(tests)
+    # Create the nick ID
+    nick_id = db.get_nick_id(nick, create=True)
+
+    # Check that one and only one nickname exists with that ID
+    nickname = session.query(Nicknames).filter(
+        Nicknames.nick_id == nick_id,
+    ).one()  # will raise if not one and exactly one
+    assert nickname.canonical == 'Exirel'
+    assert nickname.slug == nick.lower()
+
+    session.close()
+
+
+@pytest.mark.parametrize('name, slug, variant', (
+    # Check case insensitive with ASCII only
+    ('Embolalia', 'embolalia', 'eMBOLALIA'),
+    # Ensures case conversion is handled properly
+    ('[][]', '{}{}', '[}{]'),
+    # Unicode, just in case
+    ('EmbölaliÅ', 'embölaliÅ', 'EMBöLALIÅ'),
+))
+def test_get_nick_id_casemapping(db, name, slug, variant):
+    """Test get_nick_id is case-insensitive through an Identifier."""
+    session = db.session()
+    nick = Identifier(name)
+
+    # Create the nick ID
+    nick_id = db.get_nick_id(nick, create=True)
+
+    registered = session.query(Nicknames) \
+                        .filter(Nicknames.canonical == name) \
+                        .all()
+    assert len(registered) == 1
+    assert registered[0].slug == slug
+    assert registered[0].canonical == name
 
     # Check that the retrieval actually is idempotent
-    for test in tests:
-        nick_id = test[0]
-        new_id = db.get_nick_id(test[2])
-        assert nick_id == new_id
+    assert nick_id == db.get_nick_id(name)
 
     # Even if the case is different
-    for test in tests:
-        nick_id = test[0]
-        new_id = db.get_nick_id(Identifier(test[2].upper()))
-        assert nick_id == new_id
+    assert nick_id == db.get_nick_id(variant)
+
+    # And no other nick IDs are created (even with create=True)
+    assert nick_id == db.get_nick_id(name, create=True)
+    assert nick_id == db.get_nick_id(variant, create=True)
+    assert 1 == session.query(NickIDs).count()
+
+    # But a truly different name means a new nick ID
+    new_nick_id = db.get_nick_id(name + '_test', create=True)
+    assert new_nick_id != nick_id
+    assert 2 == session.query(NickIDs).count()
+
     session.close()
 
 
@@ -78,7 +113,7 @@ def test_alias_nick(db):
     nick = 'Embolalia'
     aliases = ['EmbölaliÅ', 'Embo`work', 'Embo']
 
-    nick_id = db.get_nick_id(nick)
+    nick_id = db.get_nick_id(nick, create=True)
     for alias in aliases:
         db.alias_nick(nick, alias)
 
@@ -97,7 +132,6 @@ def test_alias_nick(db):
 def test_set_nick_value(db):
     session = db.ssession()
     nick = 'Embolalia'
-    nick_id = db.get_nick_id(nick)
     data = {
         'key': 'value',
         'number_key': 1234,
@@ -108,25 +142,31 @@ def test_set_nick_value(db):
         for key, value in data.items():
             db.set_nick_value(nick, key, value)
 
+        # no `create` because that should be handled in `set_nick_value()`
+        nick_id = db.get_nick_id(nick)
+
         for key, value in data.items():
             found_value = session.query(NickValues.value) \
                                  .filter(NickValues.nick_id == nick_id) \
                                  .filter(NickValues.key == key) \
                                  .scalar()
             assert json.loads(str(found_value)) == value
-    check()
+
+        return nick_id
+
+    nid = check()
 
     # Test updates
     data['number_key'] = 'not a number anymore!'
     data['unicode'] = 'This is different toö!'
-    check()
+    assert nid == check()
     session.close()
 
 
 def test_get_nick_value(db):
     session = db.ssession()
     nick = 'Embolalia'
-    nick_id = db.get_nick_id(nick)
+    nick_id = db.get_nick_id(nick, create=True)
     data = {
         'key': 'value',
         'number_key': 1234,
@@ -180,10 +220,14 @@ def test_unalias_nick(db):
                        .filter(Nicknames.nick_id == nick_id) \
                        .all()
         assert len(found) == 1
+
+    with pytest.raises(ValueError):
+        db.unalias_nick('Mister_Bradshaw')
+
     session.close()
 
 
-def test_delete_nick_group(db):
+def test_forget_nick_group(db):
     session = db.ssession()
     aliases = ['Embolalia', 'Embo']
     nick_id = 42
@@ -195,7 +239,10 @@ def test_delete_nick_group(db):
     db.set_nick_value(aliases[0], 'foo', 'bar')
     db.set_nick_value(aliases[1], 'spam', 'eggs')
 
-    db.delete_nick_group(aliases[0])
+    db.forget_nick_group(aliases[0])
+
+    with pytest.raises(ValueError):
+        db.forget_nick_group('Mister_Bradshaw')
 
     # Nothing else has created values, so we know the tables are empty
     nicks = session.query(Nicknames).all()
@@ -266,6 +313,16 @@ def test_get_channel_value(db):
     session.close()
 
 
+def test_forget_channel(db):
+    db.set_channel_value('#testchan', 'wasd', 'uldr')
+    db.set_channel_value('#testchan', 'asdf', 'hjkl')
+    assert db.get_channel_value('#testchan', 'wasd') == 'uldr'
+    assert db.get_channel_value('#testchan', 'asdf') == 'hjkl'
+    db.forget_channel('#testchan')
+    assert db.get_channel_value('#testchan', 'wasd') is None
+    assert db.get_channel_value('#testchan', 'asdf') is None
+
+
 def test_get_channel_value_default(db):
     assert db.get_channel_value("TestChan", "DoesntExist") is None
     assert db.get_channel_value("TestChan", "DoesntExist", "MyDefault") == "MyDefault"
@@ -325,3 +382,13 @@ def test_delete_plugin_value(db):
     assert db.get_plugin_value('plugin', 'wasd') == 'uldr'
     db.delete_plugin_value('plugin', 'wasd')
     assert db.get_plugin_value('plugin', 'wasd') is None
+
+
+def test_forget_plugin(db):
+    db.set_plugin_value('plugin', 'wasd', 'uldr')
+    db.set_plugin_value('plugin', 'asdf', 'hjkl')
+    assert db.get_plugin_value('plugin', 'wasd') == 'uldr'
+    assert db.get_plugin_value('plugin', 'asdf') == 'hjkl'
+    db.forget_plugin('plugin')
+    assert db.get_plugin_value('plugin', 'wasd') is None
+    assert db.get_plugin_value('plugin', 'asdf') is None

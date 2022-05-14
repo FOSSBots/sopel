@@ -5,13 +5,13 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 import logging
 import re
 
 import requests
-import xmltodict
+import xmltodict  # type: ignore[import]
 
 from sopel import plugin, plugins
 from sopel.config import types
