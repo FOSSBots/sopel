@@ -6,7 +6,7 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 import codecs
 import collections
@@ -14,6 +14,7 @@ import os
 import re
 from string import punctuation, whitespace
 import time
+from typing import Dict
 
 from sopel import formatting, plugin, tools
 from sopel.config import types
@@ -62,7 +63,7 @@ def setup(bot):
     bot.config.define_section("meetbot", MeetbotSection)
 
 
-meetings_dict = collections.defaultdict(dict)  # Saves metadata about currently running meetings
+meetings_dict: Dict[str, dict] = collections.defaultdict(dict)  # Saves metadata about currently running meetings
 """
 meetings_dict is a 2D dict.
 
@@ -523,7 +524,7 @@ def take_comment(bot, trigger):
         return
 
     target, message = trigger.group(2).split(None, 1)
-    target = tools.Identifier(target)
+    target = bot.make_identifier(target)
     if not is_meeting_running(target):
         bot.say("There is no active meeting in that channel.")
     else:

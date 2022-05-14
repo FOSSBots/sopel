@@ -6,7 +6,7 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 from collections import defaultdict
 import io  # don't use `codecs` for loading the DB; it will split lines on some IRC formatting
@@ -16,7 +16,7 @@ import threading
 import time
 import unicodedata
 
-from sopel import formatting, plugin, tools
+from sopel import formatting, plugin
 from sopel.config import types
 from sopel.tools.time import format_time, get_timezone
 
@@ -169,7 +169,9 @@ def _format_safe_lstrip(text):
 
 @plugin.command('tell', 'ask')
 @plugin.nickname_command('tell', 'ask')
-@plugin.example('$nickname, tell dgw he broke something again.')
+@plugin.example('$nickname, tell dgw he broke it again.', user_help=True)
+@plugin.example('.tell ', 'tell whom?')
+@plugin.example('.ask Exirel ', 'ask Exirel what?')
 def f_remind(bot, trigger):
     """Give someone a message the next time they're seen"""
     teller = trigger.nick
@@ -180,13 +182,20 @@ def f_remind(bot, trigger):
         return
 
     tellee = trigger.group(3).rstrip('.,:;')
+
+    # all we care about is having at least one non-whitespace
+    # character after the name
+    if not trigger.group(4):
+        bot.reply("%s %s what?" % (verb, tellee))
+        return
+
     msg = _format_safe_lstrip(trigger.group(2).split(' ', 1)[1])
 
     if not msg:
         bot.reply("%s %s what?" % (verb, tellee))
         return
 
-    tellee = tools.Identifier(tellee)
+    tellee = bot.make_identifier(tellee)
 
     if not os.path.exists(bot.tell_filename):
         return
@@ -202,7 +211,7 @@ def f_remind(bot, trigger):
         bot.reply("I'm here now; you can %s me whatever you want!" % verb)
         return
 
-    if tellee not in (tools.Identifier(teller), bot.nick, 'me'):
+    if tellee not in (bot.make_identifier(teller), bot.nick, 'me'):
         tz = get_timezone(bot.db, bot.config, None, tellee)
         timenow = format_time(bot.db, bot.config, tz, tellee)
         with bot.memory['tell_lock']:
@@ -215,7 +224,7 @@ def f_remind(bot, trigger):
 
         response = "I'll pass that on when %s is around." % tellee
         bot.reply(response)
-    elif tools.Identifier(teller) == tellee:
+    elif bot.make_identifier(teller) == tellee:
         bot.reply('You can %s yourself that.' % verb)
     else:
         bot.reply("Hey, I'm not as stupid as Monty you know!")

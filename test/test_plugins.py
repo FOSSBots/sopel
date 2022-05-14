@@ -1,15 +1,16 @@
 """Test for the ``sopel.plugins`` module."""
-from __future__ import generator_stop
+from __future__ import annotations
 
 import sys
 
-import pkg_resources
+# TODO: switch to stdlib importlib.metdata when dropping py3.9
+import importlib_metadata
 import pytest
 
 from sopel import plugins
 
 
-MOCK_MODULE_CONTENT = """from __future__ import generator_stop
+MOCK_MODULE_CONTENT = """from __future__ import annotations
 from sopel import plugin
 
 
@@ -132,14 +133,13 @@ def test_plugin_load_entry_point(tmpdir):
     mod_file = root.join('file_mod.py')
     mod_file.write(MOCK_MODULE_CONTENT)
 
-    # generate setuptools Distribution object
-    distrib = pkg_resources.Distribution(root.strpath)
+    # set up for manual load/import
     sys.path.append(root.strpath)
 
     # load the entry point
     try:
-        entry_point = pkg_resources.EntryPoint(
-            'test_plugin', 'file_mod', dist=distrib)
+        entry_point = importlib_metadata.EntryPoint(
+            'test_plugin', 'file_mod', 'sopel.plugins')
         plugin = plugins.handlers.EntryPointPlugin(entry_point)
         plugin.load()
     finally:

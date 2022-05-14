@@ -20,21 +20,20 @@ dispatch function in :class:`sopel.bot.Sopel` and making it easier to maintain.
 # Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
 #
 # Licensed under the Eiffel Forum License 2.
-from __future__ import generator_stop
+from __future__ import annotations
 
 import base64
 import collections
+import copy
 import datetime
 import functools
 import logging
 import re
 import time
 
-from sopel import loader, plugin
-from sopel.config import ConfigurationError
-from sopel.irc import isupport
-from sopel.irc.utils import CapReq, MyInfo
-from sopel.tools import events, Identifier, SopelMemory, target, web
+from sopel import config, plugin
+from sopel.irc import isupport, utils
+from sopel.tools import events, jobs, SopelMemory, target
 
 
 LOGGER = logging.getLogger(__name__)
@@ -44,6 +43,17 @@ CORE_QUERYTYPE = '999'
 
 Other plugins should use a different querytype.
 """
+
+MODE_PREFIX_PRIVILEGES = {
+    "v": plugin.VOICE,
+    "h": plugin.HALFOP,
+    "o": plugin.OP,
+    "a": plugin.ADMIN,
+    "q": plugin.OWNER,
+    "y": plugin.OPER,
+    "Y": plugin.OPER,
+}
+
 
 batched_caps = {}
 
@@ -59,16 +69,15 @@ def setup(bot):
     # Manage JOIN flood protection
     if bot.settings.core.throttle_join:
         wait_interval = max(bot.settings.core.throttle_wait, 1)
-
-        @plugin.interval(wait_interval)
-        @plugin.label('throttle_join')
-        def processing_job(bot):
-            _join_event_processing(bot)
-
-        loader.clean_callable(processing_job, bot.settings)
-        processing_job.plugin_name = 'coretasks'
-
-        bot.register_jobs([processing_job])
+        job = jobs.Job(
+            [wait_interval],
+            plugin='coretasks',
+            label='throttle_join',
+            handler=_join_event_processing,
+            threaded=True,
+            doc=None,
+        )
+        bot.scheduler.register(job)
 
 
 def shutdown(bot):
@@ -134,7 +143,7 @@ def auth_after_register(bot):
 
     # nickserv-based auth method needs to check for current nick
     if auth_method == 'nickserv':
-        if bot.nick != bot.settings.core.nick:
+        if bot.nick != bot.make_identifier(bot.settings.core.nick):
             LOGGER.warning("Sending nickserv GHOST command.")
             bot.say(
                 'GHOST %s %s' % (bot.settings.core.nick, auth_password),
@@ -240,6 +249,29 @@ def startup(bot, trigger):
     if bot.connection_registered:
         return
 
+    # nick shenanigans are serious business, but fortunately RPL_WELCOME
+    # includes the actual nick used by the server after truncation, removal
+    # of invalid characters, etc. so we can check for such shenanigans
+    if trigger.event == events.RPL_WELCOME:
+        if bot.nick != trigger.args[0]:
+            # setting modes below is just one of the things that won't work
+            # as expected if the conditions for running this block are met
+            privmsg = (
+                "Hi, I'm your bot, %s. The IRC server didn't assign me the "
+                "nick you configured. This can cause problems for me, and "
+                "make me do weird things. You'll probably want to stop me, "
+                "figure out why my nick isn't acceptable, and fix that before "
+                "starting me again." % bot.nick
+            )
+            debug_msg = (
+                "RPL_WELCOME indicated the server did not accept the bot's "
+                "configured nickname. Requested '%s'; got '%s'. This can "
+                "cause unexpected behavior. Please modify the configuration "
+                "and restart the bot." % (bot.nick, trigger.args[0])
+            )
+            LOGGER.critical(debug_msg)
+            bot.say(privmsg, bot.config.core.owner)
+
     # set flag
     bot.connection_registered = True
 
@@ -315,6 +347,8 @@ def handle_isupport(bot, trigger):
     botmode_support = 'BOT' in bot.isupport
     namesx_support = 'NAMESX' in bot.isupport
     uhnames_support = 'UHNAMES' in bot.isupport
+    casemapping_support = 'CASEMAPPING' in bot.isupport
+    chantypes_support = 'CHANTYPES' in bot.isupport
 
     # parse ISUPPORT message from server
     parameters = {}
@@ -327,6 +361,24 @@ def handle_isupport(bot, trigger):
             LOGGER.warning("Unable to parse ISUPPORT parameter: %r", arg)
 
     bot._isupport = bot._isupport.apply(**parameters)
+
+    # update bot's mode parser
+    if 'CHANMODES' in bot.isupport:
+        bot.modeparser.chanmodes = bot.isupport.CHANMODES
+
+    if 'PREFIX' in bot.isupport:
+        bot.modeparser.privileges = set(bot.isupport.PREFIX.keys())
+
+    # rebuild nick when CASEMAPPING and/or CHANTYPES are set
+    if any((
+        # was CASEMAPPING support status updated?
+        not casemapping_support and 'CASEMAPPING' in bot.isupport,
+        # was CHANTYPES support status updated?
+        not chantypes_support and 'CHANTYPES' in bot.isupport,
+    )):
+        # these parameters change how the bot makes Identifiers
+        # since bot.nick is an Identifier, it must be rebuilt
+        bot.rebuild_nick()
 
     # was BOT mode support status updated?
     if not botmode_support and 'BOT' in bot.isupport:
@@ -358,7 +410,7 @@ def parse_reply_myinfo(bot, trigger):
     """Handle ``RPL_MYINFO`` events."""
     # keep <client> <servername> <version> only
     # the trailing parameters (mode types) should be read from ISUPPORT
-    bot._myinfo = MyInfo(*trigger.args[0:3])
+    bot._myinfo = utils.MyInfo(*trigger.args[0:3])
 
     LOGGER.info(
         "Received RPL_MYINFO from server: %s, %s, %s",
@@ -443,9 +495,12 @@ def handle_names(bot, trigger):
     channels = re.search(r'(#\S*)', trigger.raw)
     if not channels:
         return
-    channel = Identifier(channels.group(1))
+    channel = bot.make_identifier(channels.group(1))
     if channel not in bot.channels:
-        bot.channels[channel] = target.Channel(channel)
+        bot.channels[channel] = target.Channel(
+            channel,
+            identifier_factory=bot.make_identifier,
+        )
 
     # This could probably be made flexible in the future, but I don't think
     # it'd be worth it.
@@ -476,7 +531,7 @@ def handle_names(bot, trigger):
             if prefix in name:
                 priv = priv | value
 
-        nick = Identifier(name.lstrip(''.join(mapping.keys())))
+        nick = bot.make_identifier(name.lstrip(''.join(mapping.keys())))
         user = bot.users.get(nick)
         if user is None:
             # The username/hostname will be included in a NAMES reply only if
@@ -508,8 +563,19 @@ def initial_modes(bot, trigger):
 
 
 def _parse_modes(bot, args, clear=False):
-    """Parse MODE message and apply changes to internal state."""
-    channel_name = Identifier(args[0])
+    """Parse MODE message and apply changes to internal state.
+
+    Sopel, by default, doesn't know how to parse other types than A, B, C, and
+    D, and only a preset of privileges.
+
+    .. seealso::
+
+        Parsing mode messages can be tricky and complicated to understand. In
+        any case it is better to read the IRC specifications about channel
+        modes at https://modern.ircdocs.horse/#channel-mode
+
+    """
+    channel_name = bot.make_identifier(args[0])
     if channel_name.is_nick():
         # We don't do anything with user modes
         LOGGER.debug("Ignoring user modes: %r", args)
@@ -527,95 +593,76 @@ def _parse_modes(bot, args, clear=False):
         LOGGER.debug(
             "The server sent a possibly malformed MODE message: %r", args)
 
-    modestring = args[1]
-    params = args[2:]
+    # parse the modestring with the parameters
+    modeinfo = bot.modeparser.parse(args[1], tuple(args[2:]))
 
-    mapping = {
-        "v": plugin.VOICE,
-        "h": plugin.HALFOP,
-        "o": plugin.OP,
-        "a": plugin.ADMIN,
-        "q": plugin.OWNER,
-        "y": plugin.OPER,
-        "Y": plugin.OPER,
-    }
+    # set, unset, or update channel's modes based on the mode type
+    # modeinfo.modes contains only the valid parsed modes
+    # coretask can handle type A, B, C, and D only
+    modes = {} if clear else copy.deepcopy(channel.modes)
+    for letter, mode, is_added, param in modeinfo.modes:
+        if letter == 'A':
+            # type A is a multi-value mode and always requires a parameter
+            if mode not in modes:
+                modes[mode] = set()
+            if is_added:
+                modes[mode].add(param)
+            elif param in modes[mode]:
+                modes[mode].remove(param)
+                # remove mode if empty
+                if not modes[mode]:
+                    modes.pop(mode)
+        elif letter == 'B':
+            # type B is a single-value mode and always requires a parameter
+            if is_added:
+                modes[mode] = param
+            elif mode in modes:
+                modes.pop(mode)
+        elif letter == 'C':
+            # type C is a single-value mode and requires a parameter when added
+            if is_added:
+                modes[mode] = param
+            elif mode in modes:
+                modes.pop(mode)
+        elif letter == 'D':
+            # type D is a flag (True or False) and doesn't have a parameter
+            if is_added:
+                modes[mode] = True
+            elif mode in modes:
+                modes.pop(mode)
 
-    modes = {}
-    if not clear:
-        # Work on a copy for some thread safety
-        modes.update(channel.modes)
+    # atomic change of channel's modes
+    channel.modes = modes
 
-    # Process modes
-    sign = ""
-    param_idx = 0
-    chanmodes = bot.isupport.CHANMODES
-    for char in modestring:
-        # Are we setting or unsetting
-        if char in "+-":
-            sign = char
-            continue
-
-        if char in chanmodes["A"]:
-            # Type A (beI, etc) have a nick or address param to add/remove
-            if char not in modes:
-                modes[char] = set()
-            if sign == "+":
-                modes[char].add(params[param_idx])
-            elif params[param_idx] in modes[char]:
-                modes[char].remove(params[param_idx])
-            param_idx += 1
-        elif char in chanmodes["B"]:
-            # Type B (k, etc) always have a param
-            if sign == "+":
-                modes[char] = params[param_idx]
-            elif char in modes:
-                modes.pop(char)
-            param_idx += 1
-        elif char in chanmodes["C"]:
-            # Type C (l, etc) have a param only when setting
-            if sign == "+":
-                modes[char] = params[param_idx]
-                param_idx += 1
-            elif char in modes:
-                modes.pop(char)
-        elif char in chanmodes["D"]:
-            # Type D (aciLmMnOpqrRst, etc) have no params
-            if sign == "+":
-                modes[char] = True
-            elif char in modes:
-                modes.pop(char)
-        elif char in mapping and (
-            "PREFIX" not in bot.isupport or char in bot.isupport.PREFIX
-        ):
-            # User privs modes, always have a param
-            nick = Identifier(params[param_idx])
-            priv = channel.privileges.get(nick, 0)
-            value = mapping.get(char)
-            if value is not None:
-                if sign == "+":
-                    priv = priv | value
-                else:
-                    priv = priv & ~value
-                channel.privileges[nick] = priv
-            param_idx += 1
+    # update user privileges in channel
+    # modeinfo.privileges contains only the valid parsed privileges
+    for privilege, is_added, param in modeinfo.privileges:
+        # User privs modes, always have a param
+        nick = bot.make_identifier(param)
+        priv = channel.privileges.get(nick, 0)
+        value = MODE_PREFIX_PRIVILEGES[privilege]
+        if is_added:
+            priv = priv | value
         else:
-            # Might be in a mode block past A/B/C/D, but we don't speak those.
-            # Send a WHO to ensure no user priv modes we're skipping are lost.
-            LOGGER.warning(
-                "Unknown MODE message, sending WHO. Message was: %r",
-                args,
-            )
-            _send_who(bot, channel_name)
-            return
+            priv = priv & ~value
+        channel.privileges[nick] = priv
 
-    if param_idx != len(params):
+    # log ignored modes (modes Sopel doesn't know how to handle)
+    if modeinfo.ignored_modes:
+        LOGGER.warning(
+            "Unknown MODE message, sending WHO. Message was: %r",
+            args,
+        )
+        # send a WHO message to ensure we didn't miss anything
+        _send_who(bot, channel_name)
+
+    # log leftover parameters (too many arguments)
+    if modeinfo.leftover_params:
         LOGGER.warning(
             "Too many arguments received for MODE: args=%r chanmodes=%r",
             args,
-            chanmodes,
+            bot.modeparser.chanmodes,
         )
-
-    channel.modes = modes
 
     LOGGER.info("Updated mode for channel: %s", channel.name)
     LOGGER.debug("Channel %r mode: %r", str(channel.name), channel.modes)
@@ -628,23 +675,36 @@ def _parse_modes(bot, args, clear=False):
 def track_nicks(bot, trigger):
     """Track nickname changes and maintain our chanops list accordingly."""
     old = trigger.nick
-    new = Identifier(trigger)
+    new = bot.make_identifier(trigger)
 
     # Give debug message, and PM the owner, if the bot's own nick changes.
     if old == bot.nick and new != bot.nick:
-        privmsg = (
-            "Hi, I'm your bot, %s. Something has made my nick change. This "
-            "can cause some problems for me, and make me do weird things. "
-            "You'll probably want to restart me, and figure out what made "
-            "that happen so you can stop it happening again. (Usually, it "
-            "means you tried to give me a nick that's protected by NickServ.)"
-        ) % bot.nick
-        debug_msg = (
-            "Nick changed by server. This can cause unexpected behavior. "
-            "Please restart the bot."
-        )
-        LOGGER.critical(debug_msg)
-        bot.say(privmsg, bot.config.core.owner)
+        # Is this the original nick being regained?
+        # e.g. by ZNC's keepnick module running in front of Sopel
+        if old != bot.config.core.nick and new == bot.config.core.nick:
+            LOGGER.info(
+                "Regained configured nick. Restarting is still recommended.")
+        else:
+            privmsg = (
+                "Hi, I'm your bot, %s. Something has made my nick change. This "
+                "can cause some problems for me, and make me do weird things. "
+                "You'll probably want to restart me, and figure out what made "
+                "that happen so you can stop it happening again. (Usually, it "
+                "means you tried to give me a nick that's protected by NickServ.)"
+            ) % bot.config.core.nick
+            debug_msg = (
+                "Nick changed by server. This can cause unexpected behavior. "
+                "Please restart the bot."
+            )
+            LOGGER.critical(debug_msg)
+            bot.say(privmsg, bot.config.core.owner)
+
+        # Always update bot.nick anyway so Sopel doesn't lose its self-identity.
+        # This should cut down the number of "weird things" that happen while
+        # the active nick doesn't match the config, but it's not a substitute
+        # for regaining the expected nickname.
+        LOGGER.info("Updating bot.nick property with server-changed nick.")
+        bot._nick = new
         return
 
     for channel in bot.channels.values():
@@ -674,7 +734,7 @@ def track_part(bot, trigger):
 @plugin.priority('medium')
 def track_kick(bot, trigger):
     """Track users kicked from channels."""
-    nick = Identifier(trigger.args[1])
+    nick = bot.make_identifier(trigger.args[1])
     channel = trigger.sender
     _remove_from_channel(bot, nick, channel)
     LOGGER.info(
@@ -717,7 +777,9 @@ def _send_who(bot, channel):
         # We might be on an old network, but we still care about keeping our
         # user list updated
         bot.write(['WHO', channel])
-    bot.channels[Identifier(channel)].last_who = datetime.datetime.utcnow()
+
+    channel_id = bot.make_identifier(channel)
+    bot.channels[channel_id].last_who = datetime.datetime.utcnow()
 
 
 @plugin.interval(30)
@@ -762,7 +824,10 @@ def track_join(bot, trigger):
 
     # is it a new channel?
     if channel not in bot.channels:
-        bot.channels[channel] = target.Channel(channel)
+        bot.channels[channel] = target.Channel(
+            channel,
+            identifier_factory=bot.make_identifier,
+        )
 
     # did *we* just join?
     if trigger.nick == bot.nick:
@@ -805,7 +870,8 @@ def track_quit(bot, trigger):
 
     LOGGER.info("User quit: %s", trigger.nick)
 
-    if trigger.nick == bot.settings.core.nick and trigger.nick != bot.nick:
+    configured_nick = bot.make_identifier(bot.settings.core.nick)
+    if trigger.nick == configured_nick and trigger.nick != bot.nick:
         # old nick is now available, let's change nick again
         bot.change_current_nick(bot.settings.core.nick)
         auth_after_register(bot)
@@ -866,7 +932,7 @@ def receive_cap_list(bot, trigger):
             if cap == 'sasl':  # TODO why is this not done with bot.cap_req?
                 try:
                     receive_cap_ack_sasl(bot)
-                except ConfigurationError as error:
+                except config.ConfigurationError as error:
                     LOGGER.error(str(error))
                     bot.quit('Wrong SASL configuration.')
 
@@ -909,7 +975,7 @@ def receive_cap_ls_reply(bot, trigger):
     ]
     for cap in core_caps:
         if cap not in bot._cap_reqs:
-            bot._cap_reqs[cap] = [CapReq('', 'coretasks')]
+            bot._cap_reqs[cap] = [utils.CapReq('', 'coretasks')]
 
     def acct_warn(bot, cap):
         LOGGER.info("Server does not support %s, or it conflicts with a custom "
@@ -923,7 +989,7 @@ def receive_cap_ls_reply(bot, trigger):
     auth_caps = ['account-notify', 'extended-join', 'account-tag']
     for cap in auth_caps:
         if cap not in bot._cap_reqs:
-            bot._cap_reqs[cap] = [CapReq('', 'coretasks', acct_warn)]
+            bot._cap_reqs[cap] = [utils.CapReq('', 'coretasks', acct_warn)]
 
     for cap, reqs in bot._cap_reqs.items():
         # At this point, we know mandatory and prohibited don't co-exist, but
@@ -976,7 +1042,7 @@ def receive_cap_ack_sasl(bot):
 
         See https://github.com/sopel-irc/sopel/issues/1780 for background
         """
-        raise ConfigurationError(
+        raise config.ConfigurationError(
             "SASL mechanism '{}' is not advertised by this server.".format(mech))
 
     bot.write(('AUTHENTICATE', mech))
@@ -1198,7 +1264,7 @@ def blocks(bot, trigger):
     }
 
     masks = set(s for s in bot.config.core.host_blocks if s != '')
-    nicks = set(Identifier(nick)
+    nicks = set(bot.make_identifier(nick)
                 for nick in bot.config.core.nick_blocks
                 if nick != '')
     text = trigger.group().split()
@@ -1235,10 +1301,11 @@ def blocks(bot, trigger):
 
     elif len(text) == 4 and text[1] == "del":
         if text[2] == "nick":
-            if Identifier(text[3]) not in nicks:
+            nick = bot.make_identifier(text[3])
+            if nick not in nicks:
                 bot.reply(STRINGS['no_nick'] % (text[3]))
                 return
-            nicks.remove(Identifier(text[3]))
+            nicks.remove(nick)
             bot.config.core.nick_blocks = [str(n) for n in nicks]
             bot.config.save()
             bot.reply(STRINGS['success_del'] % (text[3]))
@@ -1321,8 +1388,8 @@ def recv_whox(bot, trigger):
 
 
 def _record_who(bot, channel, user, host, nick, account=None, away=None, modes=None):
-    nick = Identifier(nick)
-    channel = Identifier(channel)
+    nick = bot.make_identifier(nick)
+    channel = bot.make_identifier(channel)
     if nick not in bot.users:
         usr = target.User(nick, user, host)
         bot.users[nick] = usr
@@ -1352,7 +1419,11 @@ def _record_who(bot, channel, user, host, nick, account=None, away=None, modes=N
         for c in modes:
             priv = priv | mapping[c]
     if channel not in bot.channels:
-        bot.channels[channel] = target.Channel(channel)
+        bot.channels[channel] = target.Channel(
+            channel,
+            identifier_factory=bot.make_identifier,
+        )
+
     bot.channels[channel].add_user(usr, privs=priv)
 
 
@@ -1407,9 +1478,8 @@ def handle_url_callbacks(bot, trigger):
     For each URL found in the trigger, trigger the URL callback registered by
     the ``@url`` decorator.
     """
-    schemes = bot.config.core.auto_url_schemes
     # find URLs in the trigger
-    for url in web.search_urls(trigger, schemes=schemes):
+    for url in trigger.urls:
         # find callbacks for said URL
         for function, match in bot.search_url_callbacks(url):
             # trigger callback defined by the `@url` decorator

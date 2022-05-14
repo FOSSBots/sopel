@@ -1,5 +1,5 @@
 """coretasks.py tests"""
-from __future__ import generator_stop
+from __future__ import annotations
 
 from datetime import datetime, timezone
 
@@ -64,6 +64,7 @@ def test_bot_mixed_mode_removal(mockbot, ircfactory):
     """
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("b", "", "", "m", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined('#test', ['Uvoice', 'Uop'])
 
     irc.mode_set('#test', '+qao', ['Uvoice', 'Uvoice', 'Uvoice'])
@@ -90,6 +91,7 @@ def test_bot_mixed_mode_types(mockbot, ircfactory):
     """
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("be", "", "", "mn", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined('#test', [
         'Uvoice', 'Uop', 'Uadmin', 'Uvoice2', 'Uop2', 'Uadmin2'])
     irc.mode_set('#test', '+amovn', ['Uadmin', 'Uop', 'Uvoice'])
@@ -113,6 +115,7 @@ def test_bot_unknown_mode(mockbot, ircfactory):
     """Ensure modes not in PREFIX or CHANMODES trigger a WHO."""
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("b", "", "", "mnt", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
     irc.mode_set("#test", "+te", ["Alex"])
 
@@ -126,6 +129,7 @@ def test_bot_unknown_priv_mode(mockbot, ircfactory):
     """Ensure modes in `mapping` but not PREFIX are treated as unknown."""
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(prefix={"o": "@", "v": "+"})
+    irc.bot.modeparser.privileges = set(irc.bot.isupport.PREFIX.keys())
     irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
     irc.mode_set("#test", "+oh", ["Alex", "Bob"])
 
@@ -139,6 +143,7 @@ def test_bot_extra_mode_args(mockbot, ircfactory, caplog):
     """Test warning on extraneous MODE args."""
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("b", "k", "l", "mnt", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
 
     mode_msg = ":Sopel!bot@bot MODE #test +m nonsense"
@@ -161,6 +166,7 @@ def test_handle_rpl_channelmodeis(mockbot, ircfactory):
     ])
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("b", "k", "l", "mnt", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
     mockbot.on_message(rpl_channelmodeis)
 
@@ -174,6 +180,7 @@ def test_handle_rpl_channelmodeis_clear(mockbot, ircfactory):
     """Test RPL_CHANNELMODEIS events clearing previous modes"""
     irc = ircfactory(mockbot)
     irc.bot._isupport = isupport.ISupport(chanmodes=("b", "k", "l", "mnt", tuple()))
+    irc.bot.modeparser.chanmodes = irc.bot.isupport.CHANMODES
     irc.channel_joined("#test", ["Alex", "Bob", "Cheryl"])
 
     rpl_base = ":mercury.libera.chat 324 TestName #test {modes}"
@@ -306,6 +313,47 @@ def test_handle_isupport(mockbot):
     assert 'ELIST' in mockbot.isupport
     assert 'CPRIVMSG' in mockbot.isupport
     assert 'CNOTICE' in mockbot.isupport
+
+
+def test_handle_isupport_casemapping(mockbot):
+    # Set bot's nick to something that needs casemapping
+    mockbot.settings.core.nick = 'Test[a]'
+    mockbot._nick = mockbot.make_identifier(mockbot.settings.core.nick)
+
+    # check default behavior (`rfc1459` casemapping)
+    assert mockbot.nick.lower() == 'test{a}'
+    assert str(mockbot.nick) == 'Test[a]'
+
+    # now the bot "connects" to a server using `CASEMAPPING=ascii`
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'CHANTYPES=# EXCEPTS INVEX CHANMODES=eIbq,k,flj,CFLMPQScgimnprstz '
+        'CHANLIMIT=#:120 PREFIX=(ov)@+ MAXLIST=bqeI:100 MODES=4 '
+        'NETWORK=example STATUSMSG=@+ CALLERID=g CASEMAPPING=ascii '
+        ':are supported by this server')
+
+    assert mockbot.nick.lower() == 'test[a]'
+
+
+def test_handle_isupport_chantypes(mockbot):
+    # check default behavior (chantypes allows #, &, +, and !)
+    assert not mockbot.make_identifier('#channel').is_nick()
+    assert not mockbot.make_identifier('&channel').is_nick()
+    assert not mockbot.make_identifier('+channel').is_nick()
+    assert not mockbot.make_identifier('!channel').is_nick()
+
+    # now the bot "connects" to a server using `CHANTYPES=#`
+    mockbot.on_message(
+        ':irc.example.com 005 Sopel '
+        'CHANTYPES=# EXCEPTS INVEX CHANMODES=eIbq,k,flj,CFLMPQScgimnprstz '
+        'CHANLIMIT=#:120 PREFIX=(ov)@+ MAXLIST=bqeI:100 MODES=4 '
+        'NETWORK=example STATUSMSG=@+ CALLERID=g CASEMAPPING=ascii '
+        ':are supported by this server')
+
+    assert not mockbot.make_identifier('#channel').is_nick()
+    assert mockbot.make_identifier('&channel').is_nick()
+    assert mockbot.make_identifier('+channel').is_nick()
+    assert mockbot.make_identifier('!channel').is_nick()
 
 
 @pytest.mark.parametrize('modes', ['', 'Rw'])

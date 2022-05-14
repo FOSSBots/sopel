@@ -1,5 +1,5 @@
 """Tests for the ``sopel.plugins.rules`` module."""
-from __future__ import generator_stop
+from __future__ import annotations
 
 import re
 
@@ -658,16 +658,10 @@ def test_rule_match_privmsg_bot_tag(mockbot):
     regex = re.compile(r'.*')
     rule = rules.Rule([regex])
 
-    line = '@draft/bot :TestBot!sopel@example.com PRIVMSG #sopel :Hi!'
-    pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    assert not list(rule.match(mockbot, pretrigger)), (
-        'Line with `draft/bot` tag must be ignored'
-    )
-
     line = '@bot :TestBot!sopel@example.com PRIVMSG #sopel :Hi!'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
     assert not list(rule.match(mockbot, pretrigger)), (
-        'Line with final/ratified `bot` tag must be ignored'
+        'Line with `bot` tag must be ignored'
     )
 
 
@@ -685,6 +679,45 @@ def test_rule_match_privmsg_echo(mockbot):
 
     match = matches[0]
     assert match.group(0) == 'Hi!'
+
+
+@pytest.mark.parametrize(
+    'is_bot, allow_bots, is_echo, allow_echo, should_match',
+    [
+        (True, True, True, True, True),
+        (True, True, True, False, False),
+        (True, True, False, True, True),
+        (True, True, False, False, True),
+        (True, False, True, True, True),
+        (True, False, True, False, False),
+        (True, False, False, True, False),
+        (True, False, False, False, False),
+        (False, True, True, True, True),
+        (False, True, True, False, False),
+        (False, True, False, True, True),
+        (False, True, False, False, True),
+        (False, False, True, True, True),
+        (False, False, True, False, False),
+        (False, False, False, True, True),
+        (False, False, False, False, True),
+    ])
+def test_rule_match_privmsg_echo_and_bot_tag(
+    is_bot, allow_bots, is_echo, allow_echo, should_match, mockbot
+):
+    line = '{tags}:{nick}!user@example.com PRIVMSG #sopel :Hi!'.format(
+        tags='@bot ' if is_bot else '',
+        nick=mockbot.nick if is_echo else 'SomeUser',
+    )
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    regex = re.compile(r'.*')
+
+    rule = rules.Rule([regex], allow_bots=allow_bots, allow_echo=allow_echo)
+    matches = list(rule.match(mockbot, pretrigger))
+
+    if should_match:
+        assert len(matches) == 1, 'This combination should match the Rule'
+    else:
+        assert not matches, 'This combination should not match the Rule'
 
 
 def test_rule_match_join(mockbot):

@@ -1,5 +1,7 @@
 """Tests for core ``sopel.irc.isupport``"""
-from __future__ import generator_stop
+from __future__ import annotations
+
+from collections import OrderedDict
 
 import pytest
 
@@ -498,6 +500,29 @@ def test_parse_parameter_prefix_invalid_format():
 
     with pytest.raises(ValueError):
         isupport.parse_parameter('PREFIX=(o)@+')
+
+
+def test_parse_parameter_prefix_order_parser():
+    """Ensure PREFIX order is maintained through parser.
+
+    https://modern.ircdocs.horse/#prefix-parameter
+    """
+    key, value = isupport.parse_parameter('PREFIX=(qov)~@+')
+
+    assert value == (('q', '~'), ('o', '@'), ('v', '+'))
+
+
+def test_parse_parameter_prefix_order_property():
+    """Ensure PREFIX order is maintained in property."""
+    instance = isupport.ISupport()
+
+    key, value = isupport.parse_parameter('PREFIX=(qov)~@+')
+    new = instance.apply(
+        prefix=value,
+    )
+
+    assert new.PREFIX == OrderedDict((('q', '~'), ('o', '@'), ('v', '+')))
+    assert tuple(new.PREFIX.keys()) == ('q', 'o', 'v')
 
 
 def test_parse_parameter_targmax():

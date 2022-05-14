@@ -1,10 +1,11 @@
-from __future__ import generator_stop
+from __future__ import annotations
 
 import logging
 from logging.config import dictConfig
 import os
 
 from sopel import tools
+from sopel.lifecycle import deprecated
 
 
 class IrcLoggingHandler(logging.Handler):
@@ -33,7 +34,7 @@ class IrcLoggingHandler(logging.Handler):
             return
 
         try:
-            msg = self.format(record)
+            msg = self.format(record).replace('\n', ' ')
             self._bot.say(msg, self._channel)
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -155,7 +156,7 @@ def setup_logging(settings):
     dictConfig(logging_config)
 
 
-@tools.deprecated(
+@deprecated(
     reason='use sopel.tools.get_logger instead',
     version='7.0',
     warning_in='8.0',

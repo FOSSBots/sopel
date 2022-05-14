@@ -8,10 +8,11 @@ Plugins: Developer Overview
    plugin/what
    plugin/anatomy
    plugin/bot
+   plugin/time
+   plugin/privileges
    plugin/decorators
    plugin/test
    plugin/advanced
-   plugin/internals
 
 Plugin glossary
 ===============
@@ -123,7 +124,7 @@ Plugin glossary
 
    Entry point plugin
       A plugin that is an installed Python package and exposed through the
-      ``sopel.plugins`` setuptools entry point.
+      ``sopel.plugins`` entry point group.
 
    Sopelunking
       Action performed by a :term:`Sopelunker`.

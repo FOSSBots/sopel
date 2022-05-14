@@ -6,7 +6,7 @@ Licensed under the Eiffel Forum License 2.
 
 https://sopel.chat
 """
-from __future__ import generator_stop
+from __future__ import annotations
 
 import collections
 from datetime import datetime
@@ -367,10 +367,6 @@ class TimeReminder:
                 'message',
             ]
         )
-
-    # Mutable objects probably shouldn't be made hashable
-    # https://docs.python.org/3/reference/datamodel.html#object.__hash__
-    __hash__ = None
 
     def get_duration(self, today=None):
         """Get the duration between the reminder and ``today``
